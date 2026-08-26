@@ -1,0 +1,163 @@
+# ==============================================================================
+# CIPHERLOOP CYBERSECURITY & AGENTIC .GITIGNORE
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. SECRETS, CREDENTIALS & SENSITIVE ENVIRONMENTS
+# ------------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.env
+*.pem
+*.key
+*.pkcs12
+*.pfx
+*.p12
+*.crt
+*.csr
+*.cer
+*.der
+id_rsa
+id_rsa.pub
+id_dsa
+id_ed25519
+id_ecdsa
+*.ppk
+*.kdbx
+
+# Cloud & Service Provider Tokens / Configs
+.aws/
+credentials
+.gcp/
+.azure/
+*service_account*.json
+*.token
+*.jwt
+kubeconfig
+.kube/
+.netrc
+.dockercfg
+docker/config.json
+
+# ------------------------------------------------------------------------------
+# 2. TARGET ARTIFACTS & AUDIT DATA (NEVER COMMIT CLIENT / TARGET CODE)
+# ------------------------------------------------------------------------------
+target_repo/
+test_target/
+target/
+targets/
+workspace/
+downloads/
+repos/
+
+# Local traces & execution records containing potentially live findings / payloads
+traces/
+runs/
+eval_results/
+reports/
+findings/
+*.pcap
+*.pcapng
+*.burp
+*.har
+*.nessus
+*.nmap
+*.gnmap
+
+# Semgrep / Bandit / SAST Local Outputs
+.semgrep/
+semgrep.json
+bandit_report.json
+trufflehog_report.json
+detect_secrets.json
+
+# ------------------------------------------------------------------------------
+# 3. PYTHON ENVIRONMENT, CACHE & BUILD ARTIFACTS
+# ------------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# Testing, Linting & Type Checking
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ------------------------------------------------------------------------------
+# 4. DOCKER, CONTAINERS & LOCAL STORAGE
+# ------------------------------------------------------------------------------
+*.log
+*.sqlite
+*.sqlite3
+*.db
+docker-compose.override.yml
+*.cid
+*.containerid
+
+# ------------------------------------------------------------------------------
+# 5. OS & IDE METADATA
+# ------------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+[Dd]esktop.ini
+
+# Editors
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# ------------------------------------------------------------------------------
+# 6. LOCAL AI MODEL WEIGHTS & RUNTIME CACHES
+# ------------------------------------------------------------------------------
+models/
+weights/
+*.gguf
+*.bin
+*.safetensors
+.ollama/
