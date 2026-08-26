@@ -161,3 +161,4 @@ weights/
 *.bin
 *.safetensors
 .ollama/
+repomix-output.xml

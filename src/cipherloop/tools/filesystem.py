@@ -80,7 +80,7 @@ def run_semgrep(target_path: str = ".") -> str:
     Returns findings formatted as JSON.
     """
     safe_path = target_path.strip() or "."
-    return execute_in_sandbox(["semgrep", "scan", "--config=auto", "--json", safe_path])
+    return execute_in_sandbox(["semgrep", "scan", "--config=p/secrets", "--config=p/rce", "--json", safe_path])
 
 
 SANDBOX_TOOLS = [list_directory, read_file, search_code, run_semgrep]
