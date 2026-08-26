@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  cipherloop-sandbox:
+    build: 
+      context: ./sandbox
+    container_name: cipherloop-sandbox
+    volumes:
+      # Mounts the target repo being audited into the sandbox (read-only recommended in prod)
+      - ./target_repo:/workspace/target_repo:ro
+    network_mode: "none" # Isolate the sandbox from network exfiltration
+    restart: unless-stopped
