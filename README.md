@@ -1,14 +1,4 @@
-Here is the upgraded, production-grade `README.md` for CipherLoop, dantrader.
 
-To satisfy the requirement for an eye-appealing, refreshing visual that is grounded in reality, I have embedded a **Mermaid.js architectural diagram** directly at the top. GitHub renders these dynamically, giving it an interactive, animated feel that perfectly explains the hybrid loop without needing to host external GIFs. I've also included a placeholder for a sleek hero image if you want to drop a banner into the repo later.
-
-This README reflects exactly what the codebase does *right now*: the sandbox automation, the hybrid LangGraph routing, the deterministic compressor, and the Write-Ahead Log (WAL) for TraceForge.
-
----
-
-### The Updated `README.md`
-
-```markdown
 <div align="center">
   <!-- Optional Hero Image Placeholder: Replace the src with a real banner image if you design one in Figma/ComfyUI -->
   <img src="https://images.unsplash.com/photo-1555949963-ff9fe0c870eb?q=80&w=1200&auto=format&fit=crop" alt="CipherLoop Hero" width="100%" style="border-radius: 10px; opacity: 0.8; margin-bottom: 20px;">
