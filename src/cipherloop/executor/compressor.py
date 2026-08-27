@@ -16,12 +16,18 @@ def process_semgrep_output(raw_json: str) -> dict:
             "tool": "run_semgrep",
             "total_findings": len(results),
             "critical_findings_count": len(critical_findings),
-            "top_findings": summaries
+            "top_findings": summaries,
+            "summary_note": f"Found {len(results)} total issues. Showing top 5 critical." if len(results) > 5 else ""
         }
     except json.JSONDecodeError:
         return {"tool": "run_semgrep", "error": "Failed to parse JSON.", "snippet": raw_json[:250]}
 
 def process_generic_tool(tool_name: str, raw_output: str) -> dict:
+    # FIX: Hard character limit to prevent minified file context bombs
+    if len(raw_output) > 3000:
+        preview = raw_output[:3000] + "\n... [TRUNCATED: Output exceeded 3000 characters. Refine search.]"
+        return {"tool": tool_name, "snippet": preview, "truncated": True}
+
     lines = raw_output.split("\n", 15)
     preview = "\n".join(lines[:15])
     if len(lines) > 15:
@@ -31,8 +37,6 @@ def process_generic_tool(tool_name: str, raw_output: str) -> dict:
 
 def compressor_node(state: AuditState, config: dict) -> dict:
     messages = state.get("messages", [])
-    
-    # Retrieve the recorder from LangGraph's runtime config
     recorder = config.get("configurable", {}).get("__trajectory_recorder__")
     
     new_findings = []
