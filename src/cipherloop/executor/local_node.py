@@ -1,7 +1,7 @@
 import os
 from typing import Literal
 from langchain_core.messages import SystemMessage, ToolMessage
-from langchain_community.chat_models import ChatOllama
+from langchain_ollama import ChatOllama
 from langgraph.prebuilt import ToolNode
 
 from cipherloop.core.state import AuditState

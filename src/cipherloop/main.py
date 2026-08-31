@@ -8,11 +8,13 @@ import time
 from pathlib import Path
 from dotenv import load_dotenv
 
+# Load environment variables FIRST, before any cipherloop imports
+load_dotenv()
+
 from cipherloop.core.state import AuditState
 from cipherloop.orchestrator.graph import build_graph
 from cipherloop.core.trajectory import TrajectoryRecorder
 
-load_dotenv()
 app = typer.Typer(help="CipherLoop: Context-Compressed Hybrid Code Auditing Agent")
 
 def check_prerequisites(target_dir: str):
@@ -66,18 +68,15 @@ def audit(
     target: str = typer.Argument(..., help="Path to the target codebase directory"),
     plan: str = typer.Option("Find hardcoded secrets and potential remote code execution vulnerabilities.", help="Initial high-level audit plan")
 ):
-    """Kick off a CipherLoop audit on a target directory."""
     check_prerequisites(target)
     ensure_sandbox_running(target)
     
-    typer.echo("\n🚀 Initializing CipherLoop Graph...")
+    typer.echo("
+🚀 Initializing CipherLoop Graph...")
     abs_target = str(Path(target).resolve())
     
-    # 1. Initialize the Trajectory Recorder
     run_id = str(uuid.uuid4())[:8]
     recorder = TrajectoryRecorder(run_id=run_id)
-    
-    # 2. Inject recorder into graph config
     config = {"configurable": {"__trajectory_recorder__": recorder}}
     
     initial_state: AuditState = {
@@ -90,21 +89,21 @@ def audit(
     }
     
     graph = build_graph()
-    typer.echo(f"⏳ Executing audit loop [Run ID: {run_id}]...\n")
+    typer.echo(f"⏳ Executing audit loop [Run ID: {run_id}]...
+")
     
     final_state = initial_state
     
     async def run_audit():
         nonlocal final_state
-        # Pass the config to astream so the compressor_node can access the recorder
         async for state_snapshot in graph.astream(initial_state, config=config, stream_mode="values"):
             final_state = state_snapshot
-            
             msgs = state_snapshot.get("messages", [])
             if msgs:
                 last_msg = msgs[-1]
                 if hasattr(last_msg, "content") and not str(type(last_msg)).endswith("RemoveMessage'>"):
-                    content_preview = str(last_msg.content)[:100].replace('\n', ' ')
+                    content_preview = str(last_msg.content)[:100].replace('
+', ' ')
                     typer.echo(f"🔄 State updated: {content_preview}...")
             
             findings = state_snapshot.get("compressed_findings", [])
@@ -112,10 +111,9 @@ def audit(
                 typer.echo(f"   📌 Compressor: {len(findings)} total finding batches processed.")
     
     asyncio.run(run_audit())
-    
-    # 3. Finalize the TraceForge trajectory ledger
     recorder.finalize(final_state)
-    typer.echo(f"\n✅ Audit complete. Trajectory and metadata saved to {recorder.output_dir}")
+    typer.echo(f"
+✅ Audit complete. Trajectory and metadata saved to {recorder.output_dir}")
 
 if __name__ == "__main__":
     app()
