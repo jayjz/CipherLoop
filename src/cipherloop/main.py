@@ -4,17 +4,14 @@ import asyncio
 import subprocess
 import typer
 import uuid
-import time
 from pathlib import Path
 from dotenv import load_dotenv
-
-# Load environment variables FIRST, before any cipherloop imports
-load_dotenv()
 
 from cipherloop.core.state import AuditState
 from cipherloop.orchestrator.graph import build_graph
 from cipherloop.core.trajectory import TrajectoryRecorder
 
+load_dotenv()
 app = typer.Typer(help="CipherLoop: Context-Compressed Hybrid Code Auditing Agent")
 
 def check_prerequisites(target_dir: str):
@@ -66,13 +63,13 @@ def ensure_sandbox_running(target_dir: str):
 @app.command()
 def audit(
     target: str = typer.Argument(..., help="Path to the target codebase directory"),
-    plan: str = typer.Option("Find hardcoded secrets and potential remote code execution vulnerabilities.", help="Initial high-level audit plan")
+    plan: str = typer.Option("Find hardcoded secrets and remote code execution vulnerabilities.", help="Initial high-level audit plan")
 ):
+    """Kick off a CipherLoop audit on a target directory."""
     check_prerequisites(target)
     ensure_sandbox_running(target)
     
-    typer.echo("
-🚀 Initializing CipherLoop Graph...")
+    typer.echo("\n🚀 Initializing CipherLoop Graph...")
     abs_target = str(Path(target).resolve())
     
     run_id = str(uuid.uuid4())[:8]
@@ -84,13 +81,13 @@ def audit(
         "current_plan": plan,
         "target_directory": abs_target,
         "compressed_findings": [],
+        "verified_findings": [],
         "active_tool": "",
         "retries": 0
     }
     
     graph = build_graph()
-    typer.echo(f"⏳ Executing audit loop [Run ID: {run_id}]...
-")
+    typer.echo(f"⏳ Executing audit loop [Run ID: {run_id}]...\n")
     
     final_state = initial_state
     
@@ -98,22 +95,21 @@ def audit(
         nonlocal final_state
         async for state_snapshot in graph.astream(initial_state, config=config, stream_mode="values"):
             final_state = state_snapshot
+            
             msgs = state_snapshot.get("messages", [])
             if msgs:
                 last_msg = msgs[-1]
                 if hasattr(last_msg, "content") and not str(type(last_msg)).endswith("RemoveMessage'>"):
-                    content_preview = str(last_msg.content)[:100].replace('
-', ' ')
+                    content_preview = str(last_msg.content)[:100].replace('\n', ' ')
                     typer.echo(f"🔄 State updated: {content_preview}...")
             
-            findings = state_snapshot.get("compressed_findings", [])
-            if findings:
-                typer.echo(f"   📌 Compressor: {len(findings)} total finding batches processed.")
+            verified = [v for v in state_snapshot.get("verified_findings", []) if v.get("status") == "VERIFIED"]
+            if verified:
+                typer.echo(f"   🛡️ Verified Findings Count: {len(verified)}")
     
     asyncio.run(run_audit())
     recorder.finalize(final_state)
-    typer.echo(f"
-✅ Audit complete. Trajectory and metadata saved to {recorder.output_dir}")
+    typer.echo(f"\n✅ Audit complete. Trajectory and metadata saved to {recorder.output_dir}")
 
 if __name__ == "__main__":
     app()

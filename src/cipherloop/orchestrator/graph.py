@@ -5,6 +5,7 @@ from cipherloop.core.state import AuditState
 from cipherloop.orchestrator.nodes import planner_node, synthesizer_node
 from cipherloop.executor.local_node import call_local_model, execute_sandbox_tools, route_local_execution
 from cipherloop.executor.compressor import compressor_node
+from cipherloop.executor.validator import validator_node
 
 def build_graph():
     workflow = StateGraph(AuditState)
@@ -13,6 +14,7 @@ def build_graph():
     workflow.add_node("local_model", call_local_model)
     workflow.add_node("sandbox_tools", execute_sandbox_tools)
     workflow.add_node("compressor", compressor_node)
+    workflow.add_node("validator", validator_node)
     workflow.add_node("synthesizer", synthesizer_node)
 
     workflow.set_entry_point("planner")
@@ -28,9 +30,9 @@ def build_graph():
     )
 
     workflow.add_edge("sandbox_tools", "local_model")
+    workflow.add_edge("compressor", "validator")
 
-    def route_after_compression(state: AuditState) -> Literal["planner", "synthesizer"]:
-        # Bumped to 25 to give the agent actual runway before aborting
+    def route_after_validation(state: AuditState) -> Literal["planner", "synthesizer"]:
         if state.get("retries", 0) >= 25:
             return "synthesizer"
         
@@ -40,8 +42,8 @@ def build_graph():
         return "planner"
 
     workflow.add_conditional_edges(
-        "compressor",
-        route_after_compression,
+        "validator",
+        route_after_validation,
         {
             "planner": "planner",
             "synthesizer": "synthesizer"
