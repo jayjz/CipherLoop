@@ -1,13 +1,14 @@
-from typing import Annotated, TypedDict, List, Literal, Optional
-from langchain_core.messages import BaseMessage
+from typing import Annotated, TypedDict, List, Literal, NotRequired
 from operator import add
+from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
 
-class CodeLocation(TypedDict, total=False):
+class CodeLocation(TypedDict):
     file: str
     line: int
     symbol: str
 
-class VerifiedFinding(TypedDict, total=False):
+class VerifiedFinding(TypedDict):
     id: str
     vulnerability_class: str
     severity: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
@@ -16,15 +17,15 @@ class VerifiedFinding(TypedDict, total=False):
     taint_path: List[str]
     evidence_snippet: str
     confidence: float
-    status: Literal["HYPOTHESIS", "SUSPECTED", "VERIFIED", "REJECTED"]
-    rejection_reason: Optional[str]
+    status: Literal["VERIFIED"]
+    rejection_reason: NotRequired[str]
 
 class AuditState(TypedDict):
     """
     The memory hypervisor payload passing between Cloud and Local nodes.
     Separates raw compressed tool signals from strictly verified findings.
     """
-    messages: Annotated[List[BaseMessage], add]
+    messages: Annotated[List[BaseMessage], add_messages]
     current_plan: str
     target_directory: str
     

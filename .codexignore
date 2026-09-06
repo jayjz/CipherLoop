@@ -1,0 +1,13 @@
+# Prevent Codex from reading execution traces, logs, and binaries
+traces/
+runs/
+venv/
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+target_repo/
+*.jsonl
+*.sqlite
+*.db
+repomix-output.xml
