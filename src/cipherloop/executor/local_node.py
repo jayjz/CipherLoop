@@ -1,21 +1,12 @@
-import os
 from typing import Literal
-from langchain_core.messages import SystemMessage, ToolMessage
-from langchain_ollama import ChatOllama
+from langchain_core.messages import SystemMessage
 from langgraph.prebuilt import ToolNode
 
 from cipherloop.core.state import AuditState
 from cipherloop.tools.filesystem import SANDBOX_TOOLS
+from cipherloop.core.llm import get_local_llm
 
-LOCAL_MODEL = os.getenv("LOCAL_MODEL_NAME", "hermes3:8b")
-OLLAMA_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-
-# Removed format="json" to allow native tool-calling grammar
-local_llm = ChatOllama(
-    model=LOCAL_MODEL,
-    base_url=OLLAMA_URL,
-    temperature=0.1
-).bind_tools(SANDBOX_TOOLS)
+local_llm = get_local_llm(temperature=0.1).bind_tools(SANDBOX_TOOLS)
 
 def call_local_model(state: AuditState) -> dict:
     plan = state.get("current_plan", "No active plan.")

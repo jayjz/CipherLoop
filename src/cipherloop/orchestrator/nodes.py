@@ -1,27 +1,15 @@
-import os
 import json
 from typing import List
 from pydantic import BaseModel, Field
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-from langchain_anthropic import ChatAnthropic
 from cipherloop.core.state import AuditState
-
-API_KEY = os.getenv("ANTHROPIC_API_KEY", "sk-test-key")
+from cipherloop.core.llm import get_cloud_llm
 
 class TacticalPlan(BaseModel):
     instruction: str = Field(description="The exact next command or search query the local agent should execute. No preamble.")
 
-cloud_llm = ChatAnthropic(
-    model="claude-3-5-sonnet-20241022",
-    api_key=API_KEY,
-    temperature=0.1
-).with_structured_output(TacticalPlan)
-
-cloud_llm_synth = ChatAnthropic(
-    model="claude-3-5-sonnet-20241022",
-    api_key=API_KEY,
-    temperature=0.2
-)
+cloud_llm = get_cloud_llm(temperature=0.1).with_structured_output(TacticalPlan)
+cloud_llm_synth = get_cloud_llm(temperature=0.2)
 
 def planner_node(state: AuditState) -> dict:
     findings = state.get("compressed_findings", [])
