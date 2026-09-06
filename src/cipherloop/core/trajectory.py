@@ -45,13 +45,31 @@ class TrajectoryRecorder:
 
     def finalize(self, final_state: Dict[str, Any]):
         """Writes the final metadata and summary for TraceForge evaluation."""
+        findings = final_state.get("compressed_findings", [])
+        total_raw_char_count = sum(
+            finding.get("raw_char_count", 0)
+            for finding in findings
+            if isinstance(finding.get("raw_char_count", 0), int)
+        )
+        total_compressed_char_count = sum(
+            finding.get("compressed_char_count", 0)
+            for finding in findings
+            if isinstance(finding.get("compressed_char_count", 0), int)
+        )
         summary = {
             "run_id": self.run_id,
             "target_directory": final_state.get("target_directory"),
             "final_plan": final_state.get("current_plan"),
             "total_retries": final_state.get("retries", 0),
             "compressed_findings_count": len(final_state.get("compressed_findings", [])),
-            "trajectory_file": str(self.trajectory_file)
+            "trajectory_file": str(self.trajectory_file),
+            "total_raw_char_count": total_raw_char_count,
+            "total_compressed_char_count": total_compressed_char_count,
+            "compression_ratio": (
+                total_raw_char_count / total_compressed_char_count
+                if total_compressed_char_count
+                else None
+            ),
         }
         with open(self.metadata_file, "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2, default=str)

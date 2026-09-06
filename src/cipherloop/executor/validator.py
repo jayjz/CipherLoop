@@ -194,12 +194,14 @@ def validator_node(state: AuditState, config: RunnableConfig | None = None) -> d
     verified_findings: list[VerifiedFinding] = []
     compressed = state.get("compressed_findings", [])
     recorder = config.get("configurable", {}).get("__trajectory_recorder__")
+    total_candidates = 0
 
     for item in compressed:
         for summary in item.get("top_findings", []):
             parsed = _parse_summary(summary)
             if parsed is None:
                 continue
+            total_candidates += 1
             severity, path, line_num, description = parsed
             trace = verify_finding_evidence(path, line_num)
             if trace is None:
@@ -222,12 +224,16 @@ def validator_node(state: AuditState, config: RunnableConfig | None = None) -> d
             )
 
     if recorder:
+        verified_count = len(verified_findings)
         recorder.record_step(
             "validation",
             {
-                "total_candidates": len(compressed),
-                "verified_count": len(verified_findings),
-                "rejected_count": len(compressed) - len(verified_findings),
+                "total_candidates": total_candidates,
+                "verified_count": verified_count,
+                "rejected_count": total_candidates - verified_count,
+                "candidate_to_verified_ratio": (
+                    total_candidates / verified_count if verified_count else None
+                ),
             },
         )
 
