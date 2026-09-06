@@ -4,6 +4,7 @@ from typing import Optional
 
 from cipherloop.core.state import AuditState, CodeLocation, VerifiedFinding
 from cipherloop.tools.filesystem import read_file
+from langchain_core.runnables import RunnableConfig
 
 
 SOURCE_PREFIXES = (
@@ -187,8 +188,9 @@ def _parse_summary(summary: str) -> Optional[tuple[str, str, int, str]]:
     return severity, path, int(line), description
 
 
-def validator_node(state: AuditState, config: dict) -> dict:
+def validator_node(state: AuditState, config: RunnableConfig | None = None) -> dict:
     """Promote only AST-proven untrusted-source to dangerous-sink data flows."""
+    config = config or {}
     verified_findings: list[VerifiedFinding] = []
     compressed = state.get("compressed_findings", [])
     recorder = config.get("configurable", {}).get("__trajectory_recorder__")

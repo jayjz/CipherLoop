@@ -1,5 +1,6 @@
 import json
 from langchain_core.messages import ToolMessage, AIMessage, RemoveMessage
+from langchain_core.runnables import RunnableConfig
 from cipherloop.core.state import AuditState
 
 def process_semgrep_output(raw_json: str) -> dict:
@@ -35,26 +36,29 @@ def process_generic_tool(tool_name: str, raw_output: str) -> dict:
         
     return {"tool": tool_name, "snippet": preview, "truncated": len(lines) > 15}
 
-def compressor_node(state: AuditState, config: dict) -> dict:
+def compressor_node(state: AuditState, config: RunnableConfig | None = None) -> dict:
+    config = config or {}
     messages = state.get("messages", [])
     recorder = config.get("configurable", {}).get("__trajectory_recorder__")
     
     new_findings = []
-    messages_to_remove = []
+    messages_to_remove = [
+        RemoveMessage(id=msg_id)
+        for msg in messages
+        if (msg_id := getattr(msg, "id", None))
+    ]
     
     for msg in messages:
-        msg_id = getattr(msg, "id", None)
-        
         if isinstance(msg, ToolMessage):
-            if recorder: recorder.record_message(msg, role="tool")
+            if recorder:
+                recorder.record_message(msg, role="tool")
                 
             tool_name = getattr(msg, "name", "unknown_tool")
             finding = process_semgrep_output(msg.content) if "semgrep" in tool_name.lower() else process_generic_tool(tool_name, msg.content)
             new_findings.append(finding)
-            if msg_id: messages_to_remove.append(RemoveMessage(id=msg_id))
                 
         elif isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-            if recorder: recorder.record_message(msg, role="assistant")
-            if msg_id: messages_to_remove.append(RemoveMessage(id=msg_id))
+            if recorder:
+                recorder.record_message(msg, role="assistant")
                 
     return {"compressed_findings": new_findings, "messages": messages_to_remove}

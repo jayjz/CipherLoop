@@ -1,4 +1,5 @@
 import os
+import json
 import sys
 import asyncio
 import subprocess
@@ -8,7 +9,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from cipherloop.core.state import AuditState
-from cipherloop.orchestrator.graph import build_graph
 from cipherloop.core.trajectory import TrajectoryRecorder
 
 load_dotenv()
@@ -33,6 +33,50 @@ def check_prerequisites(target_dir: str):
         typer.echo("❌ Error: Ollama is not running. Start it with 'ollama serve'.", err=True)
         sys.exit(1)
 
+def _sandbox_mount_matches(container_id: str, target_dir: str) -> bool:
+    """Return whether the named sandbox mounts exactly the requested target."""
+    inspection = subprocess.run(
+        ["docker", "inspect", container_id], capture_output=True, text=True
+    )
+    if inspection.returncode != 0:
+        return False
+
+    try:
+        mounts = json.loads(inspection.stdout)[0].get("Mounts", [])
+    except (IndexError, TypeError, json.JSONDecodeError):
+        return False
+
+    expected = os.path.normcase(os.path.normpath(target_dir))
+    for mount in mounts:
+        if mount.get("Destination") != "/workspace/target_repo":
+            continue
+        source = mount.get("Source")
+        if source and os.path.normcase(os.path.normpath(source)) == expected:
+            return True
+    return False
+
+
+def _provision_sandbox(abs_target: str) -> None:
+    typer.echo("⚠️ Sandbox needs provisioning.")
+    subprocess.run(["docker", "build", "-t", "cipherloop-sandbox-img", "./sandbox"], check=True)
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            "cipherloop-sandbox",
+            "--network",
+            "none",
+            "-v",
+            f"{abs_target}:/workspace/target_repo:ro",
+            "cipherloop-sandbox-img",
+        ],
+        check=True,
+    )
+    typer.echo("✅ Sandbox container started successfully.")
+
+
 def ensure_sandbox_running(target_dir: str):
     typer.echo("📦 Checking sandbox container status...")
     abs_target = str(Path(target_dir).resolve())
@@ -42,23 +86,26 @@ def ensure_sandbox_running(target_dir: str):
         capture_output=True, text=True
     )
     
-    if not result.stdout.strip():
-        typer.echo("⚠️ Sandbox not running. Provisioning now...")
-        try:
-            subprocess.run(["docker", "rm", "-f", "cipherloop-sandbox"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(["docker", "build", "-t", "cipherloop-sandbox-img", "./sandbox"], check=True)
-            subprocess.run([
-                "docker", "run", "-d", "--name", "cipherloop-sandbox",
-                "--network", "none",
-                "-v", f"{abs_target}:/workspace/target_repo:ro",
-                "cipherloop-sandbox-img"
-            ], check=True)
-            typer.echo("✅ Sandbox container started successfully.")
-        except subprocess.CalledProcessError:
-            typer.echo("❌ Failed to start sandbox.", err=True)
-            sys.exit(1)
-    else:
+    container_id = result.stdout.strip()
+
+    if container_id and _sandbox_mount_matches(container_id, abs_target):
         typer.echo("✅ Sandbox container is already running.")
+        return
+
+    try:
+        if container_id:
+            typer.echo("⚠️ Sandbox target differs; replacing stale container.")
+            subprocess.run(["docker", "rm", "-f", "cipherloop-sandbox"], check=True)
+        else:
+            subprocess.run(
+                ["docker", "rm", "-f", "cipherloop-sandbox"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        _provision_sandbox(abs_target)
+    except subprocess.CalledProcessError:
+        typer.echo("❌ Failed to start sandbox.", err=True)
+        sys.exit(1)
 
 @app.command()
 def audit(
@@ -86,6 +133,8 @@ def audit(
         "retries": 0
     }
     
+    from cipherloop.orchestrator.graph import build_graph
+
     graph = build_graph()
     typer.echo(f"⏳ Executing audit loop [Run ID: {run_id}]...\n")
     
