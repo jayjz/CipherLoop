@@ -1,15 +1,16 @@
-import os
-import json
-import sys
 import asyncio
+import json
+import os
 import subprocess
-import typer
+import sys
 import uuid
 from pathlib import Path
+
+import typer
 from dotenv import load_dotenv
 
 from cipherloop.core.state import AuditState
-from cipherloop.core.trajectory import TrajectoryRecorder
+from cipherloop.core.trajectory import PRODUCTION_CONTRACT_VERSION, TrajectoryRecorder
 
 load_dotenv()
 app = typer.Typer(help="CipherLoop: Context-Compressed Hybrid Code Auditing Agent")
@@ -107,20 +108,42 @@ def ensure_sandbox_running(target_dir: str):
         typer.echo("❌ Failed to start sandbox.", err=True)
         sys.exit(1)
 
+def _lifecycle_error(stage: str, exc: BaseException) -> dict[str, str]:
+    return {
+        "stage": stage,
+        "type": type(exc).__name__,
+        "message": str(exc) or type(exc).__name__,
+    }
+
+
+def _record_failed_lifecycle(
+    recorder: TrajectoryRecorder,
+    final_state: AuditState,
+    execution_status: str,
+    error: dict[str, str],
+) -> None:
+    """Best-effort failure capture that never replaces the original failure."""
+    try:
+        recorder.finish_run(execution_status, error)
+        recorder.finalize(final_state)
+    except Exception as capture_error:  # noqa: BLE001 - retain the original failure.
+        typer.echo(f"Production evidence capture failed: {capture_error}", err=True)
+
+
 @app.command()
 def audit(
     target: str = typer.Argument(..., help="Path to the target codebase directory"),
     plan: str = typer.Option("Find hardcoded secrets and remote code execution vulnerabilities.", help="Initial high-level audit plan")
 ):
     """Kick off a CipherLoop audit on a target directory."""
-    check_prerequisites(target)
-    ensure_sandbox_running(target)
-    
     typer.echo("\n🚀 Initializing CipherLoop Graph...")
     abs_target = str(Path(target).resolve())
     
-    run_id = str(uuid.uuid4())[:8]
-    recorder = TrajectoryRecorder(run_id=run_id)
+    run_id = str(uuid.uuid4())
+    recorder = TrajectoryRecorder(
+        run_id=run_id,
+        contract_version=PRODUCTION_CONTRACT_VERSION,
+    )
     config = {"configurable": {"__trajectory_recorder__": recorder}}
     
     initial_state: AuditState = {
@@ -132,11 +155,6 @@ def audit(
         "active_tool": "",
         "retries": 0
     }
-    
-    from cipherloop.orchestrator.graph import build_graph
-
-    graph = build_graph()
-    typer.echo(f"⏳ Executing audit loop [Run ID: {run_id}]...\n")
     
     final_state = initial_state
     
@@ -156,7 +174,38 @@ def audit(
             if verified:
                 typer.echo(f"   🛡️ Verified Findings Count: {len(verified)}")
     
-    asyncio.run(run_audit())
+    recorder.start_run(task_description=plan, target_directory=abs_target)
+    stage = "preflight"
+    try:
+        check_prerequisites(target)
+        stage = "sandbox_setup"
+        ensure_sandbox_running(target)
+
+        stage = "graph_build"
+        from cipherloop.orchestrator.graph import build_graph
+
+        graph = build_graph()
+        typer.echo(f"⏳ Executing audit loop [Run ID: {run_id}]...\n")
+        stage = "graph_execution"
+        asyncio.run(run_audit())
+    except (KeyboardInterrupt, asyncio.CancelledError) as exc:
+        _record_failed_lifecycle(
+            recorder,
+            final_state,
+            "interrupted",
+            _lifecycle_error(stage, exc),
+        )
+        raise
+    except (Exception, SystemExit) as exc:
+        _record_failed_lifecycle(
+            recorder,
+            final_state,
+            "failed",
+            _lifecycle_error(stage, exc),
+        )
+        raise
+
+    recorder.finish_run("completed", None)
     recorder.finalize(final_state)
     typer.echo(f"\n✅ Audit complete. Trajectory and metadata saved to {recorder.output_dir}")
 
