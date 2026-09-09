@@ -1,6 +1,8 @@
 import json
-from langchain_core.messages import ToolMessage, AIMessage, RemoveMessage
+
+from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
+
 from cipherloop.core.state import AuditState
 
 
@@ -57,7 +59,9 @@ def compressor_node(state: AuditState, config: RunnableConfig | None = None) -> 
     config = config or {}
     messages = state.get("messages", [])
     recorder = config.get("configurable", {}).get("__trajectory_recorder__")
-    
+    is_production = bool(recorder and recorder.is_production)
+    existing_findings_count = len(state.get("compressed_findings", []))
+
     new_findings = []
     messages_to_remove = [
         RemoveMessage(id=msg_id)
@@ -67,11 +71,20 @@ def compressor_node(state: AuditState, config: RunnableConfig | None = None) -> 
     
     for msg in messages:
         if isinstance(msg, ToolMessage):
+            raw_result_ref = None
             if recorder:
-                recorder.record_message(msg, role="tool")
-                
+                raw_result_ref = recorder.record_message(msg, role="tool")
+
             tool_name = getattr(msg, "name", "unknown_tool")
             finding = process_semgrep_output(msg.content) if "semgrep" in tool_name.lower() else process_generic_tool(tool_name, msg.content)
+            if is_production:
+                if raw_result_ref is None:
+                    raise RuntimeError("Production ToolMessage observation did not produce an event reference")
+                recorder.record_compression(
+                    raw_result_ref=raw_result_ref,
+                    state_index=existing_findings_count + len(new_findings),
+                    finding=finding,
+                )
             new_findings.append(finding)
                 
         elif isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):

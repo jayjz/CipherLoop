@@ -1,11 +1,11 @@
 import ast
+import hashlib
 from dataclasses import dataclass
-from typing import Optional
+
+from langchain_core.runnables import RunnableConfig
 
 from cipherloop.core.state import AuditState, CodeLocation, VerifiedFinding
 from cipherloop.tools.filesystem import read_file
-from langchain_core.runnables import RunnableConfig
-
 
 SOURCE_PREFIXES = (
     "request.args",
@@ -37,7 +37,15 @@ class TaintTrace:
     path: list[str]
 
 
-def _dotted_name(node: ast.AST) -> Optional[str]:
+@dataclass(frozen=True)
+class _ValidationEvidence:
+    trace: TaintTrace | None
+    source_code: str | None
+    reason: str | None
+    error: Exception | None
+
+
+def _dotted_name(node: ast.AST) -> str | None:
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
@@ -53,7 +61,7 @@ def _reference(location: CodeLocation) -> str:
 class _TaintAnalyzer(ast.NodeVisitor):
     """Conservative, intra-procedural taint tracking for command-execution calls."""
 
-    def __init__(self, target_file: str, expected_sink_line: Optional[int]) -> None:
+    def __init__(self, target_file: str, expected_sink_line: int | None) -> None:
         self.target_file = target_file
         self.expected_sink_line = expected_sink_line
         self.bindings: dict[str, tuple[CodeLocation, list[str]]] = {}
@@ -62,8 +70,8 @@ class _TaintAnalyzer(ast.NodeVisitor):
     def _location(self, node: ast.AST, symbol: str) -> CodeLocation:
         return {"file": self.target_file, "line": node.lineno, "symbol": symbol}
 
-    def _source_trace(self, node: ast.AST) -> Optional[tuple[CodeLocation, list[str]]]:
-        symbol: Optional[str] = None
+    def _source_trace(self, node: ast.AST) -> tuple[CodeLocation, list[str]] | None:
+        symbol: str | None = None
         if isinstance(node, ast.Call):
             dotted = _dotted_name(node.func)
             if dotted in SOURCE_CALLS or dotted and dotted.startswith(SOURCE_PREFIXES):
@@ -80,7 +88,7 @@ class _TaintAnalyzer(ast.NodeVisitor):
 
     def _taint_from_expression(
         self, node: ast.AST
-    ) -> Optional[tuple[CodeLocation, list[str]]]:
+    ) -> tuple[CodeLocation, list[str]] | None:
         source = self._source_trace(node)
         if source:
             return source
@@ -94,7 +102,7 @@ class _TaintAnalyzer(ast.NodeVisitor):
         return None
 
     def _bind_target(
-        self, target: ast.AST, taint: Optional[tuple[CodeLocation, list[str]]]
+        self, target: ast.AST, taint: tuple[CodeLocation, list[str]] | None
     ) -> None:
         if not isinstance(target, ast.Name):
             return
@@ -146,34 +154,52 @@ class _TaintAnalyzer(ast.NodeVisitor):
 
 
 def find_taint_trace(
-    source_code: str, target_file: str, expected_sink_line: Optional[int] = None
-) -> Optional[TaintTrace]:
+    source_code: str, target_file: str, expected_sink_line: int | None = None
+) -> TaintTrace | None:
     """Return an AST-backed source-to-sink trace, or ``None`` when none exists."""
+    trace, _reason = _find_taint_trace_with_reason(
+        source_code, target_file, expected_sink_line=expected_sink_line
+    )
+    return trace
+
+
+def _find_taint_trace_with_reason(
+    source_code: str, target_file: str, expected_sink_line: int | None = None
+) -> tuple[TaintTrace | None, str | None]:
     try:
         tree = ast.parse(source_code, filename=target_file)
     except SyntaxError:
-        return None
+        return None, "syntax_error"
 
     analyzer = _TaintAnalyzer(target_file, expected_sink_line)
     analyzer.visit(tree)
-    return analyzer.traces[0] if analyzer.traces else None
+    if analyzer.traces:
+        return analyzer.traces[0], None
+    return None, "no_taint_trace"
 
 
-def verify_finding_evidence(target_file: str, line_num: int) -> Optional[TaintTrace]:
-    """Read the sandboxed target and verify the reported sink with an AST trace."""
+def _inspect_finding_evidence(target_file: str, line_num: int) -> _ValidationEvidence:
     try:
         source_code = read_file.invoke(
             {"filepath": target_file, "start_line": 1, "end_line": 1_000_000}
         )
-    except Exception:
-        return None
+    except Exception as exc:  # noqa: BLE001 - preserve the existing all-read-failure rejection.
+        return _ValidationEvidence(None, None, "read_exception", exc)
 
     if "Tool Execution Error" in source_code or "System Error" in source_code:
-        return None
-    return find_taint_trace(source_code, target_file, expected_sink_line=line_num)
+        return _ValidationEvidence(None, source_code, "read_error_marker", None)
+    trace, reason = _find_taint_trace_with_reason(
+        source_code, target_file, expected_sink_line=line_num
+    )
+    return _ValidationEvidence(trace, source_code, reason, None)
 
 
-def _parse_summary(summary: str) -> Optional[tuple[str, str, int, str]]:
+def verify_finding_evidence(target_file: str, line_num: int) -> TaintTrace | None:
+    """Read the sandboxed target and verify the reported sink with an AST trace."""
+    return _inspect_finding_evidence(target_file, line_num).trace
+
+
+def _parse_summary(summary: str) -> tuple[str, str, int, str] | None:
     if not summary.startswith("["):
         return None
     severity, separator, remainder = summary[1:].partition("] ")
@@ -188,53 +214,159 @@ def _parse_summary(summary: str) -> Optional[tuple[str, str, int, str]]:
     return severity, path, int(line), description
 
 
+def _verified_finding(
+    path: str, line_num: int, severity: str, description: str, trace: TaintTrace
+) -> VerifiedFinding:
+    return {
+        "id": f"VULN-{path.replace('/', '_')}-{line_num}",
+        "vulnerability_class": description,
+        "severity": severity
+        if severity in {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
+        else "MEDIUM",
+        "source": trace.source,
+        "sink": trace.sink,
+        "taint_path": trace.path,
+        "evidence_snippet": "AST-verified taint path: " + " -> ".join(trace.path),
+        "confidence": 0.9,
+        "status": "VERIFIED",
+    }
+
+
+def _source_slice(trace: TaintTrace, source_read_ref: int) -> dict[str, int]:
+    lines = [trace.source["line"], trace.sink["line"]]
+    for reference in trace.path:
+        _file, line, _symbol = reference.rsplit(":", 2)
+        lines.append(int(line))
+    return {
+        "source_read_ref": source_read_ref,
+        "start_line": min(lines),
+        "end_line": max(lines),
+    }
+
+
 def validator_node(state: AuditState, config: RunnableConfig | None = None) -> dict:
     """Promote only AST-proven untrusted-source to dangerous-sink data flows."""
     config = config or {}
     verified_findings: list[VerifiedFinding] = []
     compressed = state.get("compressed_findings", [])
     recorder = config.get("configurable", {}).get("__trajectory_recorder__")
+    is_production = bool(recorder and recorder.is_production)
+    cycle = recorder.next_validation_cycle() if is_production else None
     total_candidates = 0
 
-    for item in compressed:
-        for summary in item.get("top_findings", []):
+    for state_index, item in enumerate(compressed):
+        for summary_index, summary in enumerate(item.get("top_findings", [])):
+            candidate_ref = None
+            if is_production:
+                compression_ref = recorder.compression_ref_for_state_index(state_index)
+                if compression_ref is None:
+                    raise RuntimeError(
+                        f"Missing production compression evidence for state index {state_index}"
+                    )
+                candidate_ref = recorder.record_step(
+                    "validation.candidate",
+                    {
+                        "cycle": cycle,
+                        "compression_ref": compression_ref,
+                        "summary_index": summary_index,
+                        "summary": summary,
+                    },
+                )
             parsed = _parse_summary(summary)
             if parsed is None:
+                if is_production:
+                    recorder.record_step(
+                        "validation.decision",
+                        {
+                            "candidate_ref": candidate_ref,
+                            "disposition": "skipped",
+                            "reason": "malformed_summary",
+                            "source_read_ref": None,
+                            "finding": None,
+                            "source_slice": None,
+                        },
+                    )
                 continue
             total_candidates += 1
             severity, path, line_num, description = parsed
-            trace = verify_finding_evidence(path, line_num)
-            if trace is None:
+            evidence = _inspect_finding_evidence(path, line_num)
+            if is_production:
+                arguments = {"filepath": path, "start_line": 1, "end_line": 1_000_000}
+                if evidence.error is not None:
+                    source_read_ref = recorder.record_step(
+                        "source.read",
+                        {
+                            "candidate_ref": candidate_ref,
+                            "arguments": arguments,
+                            "status": "error",
+                            "text": None,
+                            "text_sha256": None,
+                            "error": {
+                                "stage": "validation_read",
+                                "type": type(evidence.error).__name__,
+                                "message": str(evidence.error),
+                            },
+                        },
+                    )
+                else:
+                    source_read_ref = recorder.record_step(
+                        "source.read",
+                        {
+                            "candidate_ref": candidate_ref,
+                            "arguments": arguments,
+                            "status": "returned",
+                            "text": evidence.source_code,
+                            "text_sha256": hashlib.sha256(
+                                evidence.source_code.encode("utf-8")
+                            ).hexdigest(),
+                            "error": None,
+                        },
+                    )
+            if evidence.trace is None:
+                if is_production:
+                    recorder.record_step(
+                        "validation.decision",
+                        {
+                            "candidate_ref": candidate_ref,
+                            "disposition": "rejected",
+                            "reason": evidence.reason,
+                            "source_read_ref": source_read_ref,
+                            "finding": None,
+                            "source_slice": None,
+                        },
+                    )
                 continue
 
-            verified_findings.append(
-                {
-                    "id": f"VULN-{path.replace('/', '_')}-{line_num}",
-                    "vulnerability_class": description,
-                    "severity": severity
-                    if severity in {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
-                    else "MEDIUM",
-                    "source": trace.source,
-                    "sink": trace.sink,
-                    "taint_path": trace.path,
-                    "evidence_snippet": "AST-verified taint path: " + " -> ".join(trace.path),
-                    "confidence": 0.9,
-                    "status": "VERIFIED",
-                }
-            )
+            finding = _verified_finding(path, line_num, severity, description, evidence.trace)
+            verified_findings.append(finding)
+            if is_production:
+                recorder.record_step(
+                    "validation.decision",
+                    {
+                        "candidate_ref": candidate_ref,
+                        "disposition": "verified",
+                        "reason": None,
+                        "source_read_ref": source_read_ref,
+                        "finding": finding,
+                        "source_slice": _source_slice(evidence.trace, source_read_ref),
+                    },
+                )
 
     if recorder:
         verified_count = len(verified_findings)
+        payload = {
+            "total_candidates": total_candidates,
+            "verified_count": verified_count,
+            "rejected_count": total_candidates - verified_count,
+            "candidate_to_verified_ratio": (
+                total_candidates / verified_count if verified_count else None
+            ),
+        }
+        if is_production:
+            payload["cycle"] = cycle
         recorder.record_step(
             "validation",
-            {
-                "total_candidates": total_candidates,
-                "verified_count": verified_count,
-                "rejected_count": total_candidates - verified_count,
-                "candidate_to_verified_ratio": (
-                    total_candidates / verified_count if verified_count else None
-                ),
-            },
+            payload,
         )
 
     return {"verified_findings": verified_findings}

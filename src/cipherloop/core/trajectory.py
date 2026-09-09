@@ -35,6 +35,8 @@ class TrajectoryRecorder:
         self._start_ref: int | None = None
         self._finish_ref: int | None = None
         self._execution_status: Literal["completed", "failed", "interrupted"] | None = None
+        self._compression_refs: dict[int, int] = {}
+        self._validation_cycle = 0
 
         if self.is_production:
             self._validate_production_run_id()
@@ -150,7 +152,7 @@ class TrajectoryRecorder:
         self._execution_status = execution_status
         return self._finish_ref
 
-    def record_message(self, msg: BaseMessage, role: str):
+    def record_message(self, msg: BaseMessage, role: str) -> int | None:
         """Serialize LangChain messages for the trajectory ledger."""
         payload = {
             "type": type(msg).__name__,
@@ -164,7 +166,42 @@ class TrajectoryRecorder:
             payload["tool_name"] = getattr(msg, "name", "unknown")
             payload["tool_call_id"] = getattr(msg, "tool_call_id", "unknown")
 
-        self.record_step("message", payload)
+        return self.record_step("message", payload)
+
+    def record_compression(
+        self, raw_result_ref: int, state_index: int, finding: dict[str, Any]
+    ) -> int:
+        """Persist one production compression and retain its state-index reference."""
+        if not self.is_production:
+            raise RuntimeError("Compression evidence is available only in production mode")
+        if state_index < 0:
+            raise ValueError("Compression state_index must be non-negative")
+        if state_index in self._compression_refs:
+            raise RuntimeError(f"Compression evidence already exists for state index {state_index}")
+
+        compression_ref = self.record_step(
+            "compression",
+            {
+                "raw_result_ref": raw_result_ref,
+                "state_index": state_index,
+                "finding": finding,
+            },
+        )
+        self._compression_refs[state_index] = compression_ref
+        return compression_ref
+
+    def compression_ref_for_state_index(self, state_index: int) -> int | None:
+        """Return immutable production compression provenance for a state position."""
+        if not self.is_production:
+            return None
+        return self._compression_refs.get(state_index)
+
+    def next_validation_cycle(self) -> int:
+        """Allocate the next recorder-local production validation cycle identity."""
+        if not self.is_production:
+            raise RuntimeError("Validation cycles are available only in production mode")
+        self._validation_cycle += 1
+        return self._validation_cycle
 
     def finalize(self, final_state: dict[str, Any]):
         """Write final metadata and summary for trajectory evaluation."""
