@@ -48,14 +48,16 @@ The moat should not depend on owning one LLM, scanner, or orchestration framewor
 
 ## CipherLoop
 
-At preparation time:
+At the P0.1 closure review (initial worktree clean):
 
 - `main`: `f03a1e186e491cf24aa0f0e0671cac766c1fa8ab`
-- `feat/production-evidence-capture`: `84c96e7656ad12c2a662681897093d2a6c5a60b6`
-- `docs/production-evidence-capture`: `cc948845d12bbd80af0c6bec1d3021964406f92c`
-- `wip/windows-existing-work`: `12b83857161e2ac68a7c31d68e6b9800805a54e3`
+- `feat/production-evidence-capture`: `7f9eddb2b3310ee0de8b01dda4e1559e914b4568`
+- P0.1A lifecycle commit: `26e966839d337a4e74a7069a8e2e9c4880f89211`
+- P0.1B validation-evidence commit: `7f9eddb2b3310ee0de8b01dda4e1559e914b4568`
 
-`feat/production-evidence-capture` is one commit ahead of `main`, zero behind, and its only committed delta is `docs/production-evidence-capture-plan.md`.
+`feat/production-evidence-capture` is four commits ahead of `main`, zero behind.
+The committed delta includes the operating protocol, roadmap, evidence design,
+P0.1A/P0.1B implementation, and focused tests.
 
 Implemented today:
 - configurable cloud planner/synthesizer,
@@ -87,22 +89,21 @@ AST evidence validation
 
 Agents must follow implementation/tests over stale README prose.
 
-### Production evidence gap
+### Production evidence status
 
-Current persistence does not yet capture enough for independent production evaluation. Missing or incomplete areas include:
-- original task identity,
-- explicit run lifecycle,
-- exact compressed records,
-- individual candidate decisions,
-- verified/rejected findings,
-- rejection reasons,
-- source reads,
-- immutable analyzed source,
-- source slices,
-- interruption/finalization evidence,
-- model/provider provenance.
+P0.1A and P0.1B are implemented on the feature branch. Production mode retains the
+original task, explicit observed lifecycle, exact compressed records, individual
+validation attempts/decisions, rejection reasons, analyzed source text/hashes, and
+verified source slices. Failed/interrupted execution is distinct from completed
+execution; missing metadata denotes incomplete evidence.
 
-The design exists in `docs/production-evidence-capture-plan.md`; implementation has not begun.
+P0.1 release closure remains open. The tested format omits the design's final-state
+finding references/reconciliation, validation-cycle start events, explicit evidence
+status, report/provenance availability fields, and rejection slices. Publication
+does not synchronize the directory. See the current-status annotation in
+`docs/production-evidence-capture-plan.md` before treating its historical inventory
+or proposed contract as current behavior. Production ingestion is a separate P0.2
+milestone; no independent production-evaluation claim follows from producer tests.
 
 ## TrajectoryLab / TraceForge
 
@@ -411,7 +412,7 @@ Only after users:
 # 12. Roadmap
 
 ## Phase 0 — Strategy/truth baseline
-**Status: current.**
+**Status: established; current-status prose maintained during P0.1 closure.**
 
 - add this document,
 - keep production evidence plan as immediate technical design,
@@ -421,9 +422,11 @@ Only after users:
 **Exit:** humans/agents have one durable strategy reference.
 
 ## Phase 1 — CipherLoop production evidence contract
-**Next implementation milestone.**
+**P0.1A and P0.1B implemented; release closure pending.**
 
-Implement the smallest useful slice from `docs/production-evidence-capture-plan.md`.
+P0.1A captures the production run lifecycle; P0.1B captures source-backed
+validation decisions. Close the remaining contract and verification gaps recorded
+in `docs/production-evidence-capture-plan.md` before declaring Phase 1 complete.
 
 Required:
 - contract version,
@@ -440,9 +443,13 @@ Required:
 
 Do not change detection, planner, scanner behavior, add LLM judging, dashboards, or frozen TrajectoryLab fixtures.
 
-**Exit:** deterministic offline runs distinguish verified positive, valid negative, rejected candidate, failed run, interrupted/incomplete run.
+**Exit:** deterministic offline runs distinguish verified positive, completed
+zero-candidate observation, rejected candidate, failed run, and interrupted/incomplete
+run, with an agreed final-summary contract. A negative observation is not proof of safety.
 
 ## Phase 2 — TrajectoryLab production adapter
+**P0.2: separate work after P0.1 closure; outside this review.**
+
 Build a separate production adapter; preserve fixture baseline.
 
 Required:
@@ -543,14 +550,12 @@ All are acceptable if supported by evidence.
 # 13. Immediate execution order
 
 ```text
-1. Add this document to CipherLoop.
-2. Add one AGENTS.md reference to it.
-3. Run bounded Phase 1 production-evidence implementation.
-4. Review/merge only after focused verification.
-5. Build TrajectoryLab production adapter.
-6. Add cross-repo compatibility CI.
-7. Build first independent benchmark corpus.
-8. Measure before broad scoring or UI.
+1. Close P0.1 failure-path, release-contract, and verification gaps.
+2. Review the P0.1 diff; perform Git publication only in a separately authorized task.
+3. Build the separate P0.2 TrajectoryLab production adapter.
+4. Add cross-repo compatibility CI.
+5. Build the first independent benchmark corpus.
+6. Measure before broad scoring or UI.
 ```
 
 ---

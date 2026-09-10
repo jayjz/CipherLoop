@@ -37,6 +37,7 @@ class TrajectoryRecorder:
         self._execution_status: Literal["completed", "failed", "interrupted"] | None = None
         self._compression_refs: dict[int, int] = {}
         self._validation_cycle = 0
+        self._append_failed = False
 
         if self.is_production:
             self._validate_production_run_id()
@@ -80,6 +81,8 @@ class TrajectoryRecorder:
         return None
 
     def _record_production_step(self, step_type: str, data: dict[str, Any]) -> int:
+        if self._append_failed:
+            raise RuntimeError("Production ledger is unusable after an append failure")
         if self._finish_ref is not None:
             raise RuntimeError("Cannot record events after run.finished")
         if not isinstance(step_type, str) or not step_type:
@@ -97,10 +100,15 @@ class TrajectoryRecorder:
             "payload": data,
         }
         serialized = json.dumps(record, allow_nan=False, separators=(",", ":"))
-        with self.trajectory_file.open("a", encoding="utf-8", newline="\n") as f:
-            f.write(serialized + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+        try:
+            with self.trajectory_file.open("a", encoding="utf-8", newline="\n") as f:
+                f.write(serialized + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+        except BaseException:
+            # The append may have left partial or unsynchronized bytes. Never reuse it.
+            self._append_failed = True
+            raise
         self._seq = next_seq
         return next_seq
 
@@ -239,6 +247,8 @@ class TrajectoryRecorder:
         self._finalize_production(summary)
 
     def _finalize_production(self, summary: dict[str, Any]) -> None:
+        if self._append_failed:
+            raise RuntimeError("Production ledger is unusable after an append failure")
         if self._start_ref is None or self._finish_ref is None or self._execution_status is None:
             raise RuntimeError("Production metadata requires run.started and run.finished")
         if self._finish_ref != self._seq:

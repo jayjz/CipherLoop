@@ -1,11 +1,17 @@
+import hashlib
 import json
 import sys
 import types
 
 import pytest
+from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.graph import END, START, StateGraph
 
 from cipherloop import main
+from cipherloop.core.state import AuditState
 from cipherloop.core.trajectory import TrajectoryRecorder
+from cipherloop.executor.compressor import compressor_node
+from cipherloop.executor.validator import validator_node
 
 
 class _SuccessfulGraph:
@@ -138,3 +144,110 @@ def test_ledger_without_valid_metadata_is_incomplete_contract_artifact(tmp_path)
 
     assert recorder.trajectory_file.exists()
     assert not recorder.metadata_file.exists()
+
+
+@pytest.mark.parametrize("outcome", ["verified", "no_candidates", "rejected", "analysis_failure"])
+def test_production_graph_retains_evidence_through_cli_lifecycle(
+    monkeypatch, tmp_path, capsys, outcome
+):
+    source = "import os\nx = input()\nos.system(x)\n"
+    if outcome == "rejected":
+        source = "import os\nx = 'safe'\nos.system(x)\n"
+    results = [] if outcome == "no_candidates" else [
+        {
+            "path": "app.py", "start": {"line": 3},
+            "extra": {"severity": "ERROR", "message": "Command injection"},
+        }
+    ]
+    read_arguments = []
+
+    def read(arguments):
+        read_arguments.append(arguments)
+        return source
+
+    monkeypatch.setattr(
+        "cipherloop.executor.validator.read_file", types.SimpleNamespace(invoke=read)
+    )
+    analysis_error = RecursionError("analysis failed")
+    if outcome == "analysis_failure":
+        def fail_analysis(*_args, **_kwargs):
+            raise analysis_error
+        monkeypatch.setattr(
+            "cipherloop.executor.validator._find_taint_trace_with_reason", fail_analysis
+        )
+
+    def observe(_state):
+        return {"messages": [
+            AIMessage(content="", tool_calls=[
+                {"id": "scan", "name": "run_semgrep", "args": {"target_path": "app.py"}}
+            ]),
+            ToolMessage(content=json.dumps({"results": results}), name="run_semgrep",
+                        tool_call_id="scan"),
+        ]}
+
+    def validate(state, config):
+        # Exercise the real RemoveMessage reducer before source capture.
+        assert state["messages"] == []
+        return validator_node(state, config)
+
+    graph = StateGraph(AuditState)
+    graph.add_node("observe", observe)
+    graph.add_node("compressor", compressor_node)
+    graph.add_node("validator", validate)
+    graph.add_edge(START, "observe")
+    graph.add_edge("observe", "compressor")
+    graph.add_edge("compressor", "validator")
+    graph.add_edge("validator", END)
+    recorders = _run_audit(monkeypatch, tmp_path, graph.compile())
+
+    if outcome == "analysis_failure":
+        with pytest.raises(RecursionError) as raised:
+            main.audit(target=str(tmp_path), plan="audit")
+        assert raised.value is analysis_error
+    else:
+        main.audit(target=str(tmp_path), plan="audit")
+
+    rows, metadata = _artifacts(recorders[0])
+    status = "failed" if outcome == "analysis_failure" else "completed"
+    assert rows[-1]["payload"]["execution_status"] == metadata["execution_status"] == status
+    assert [row["seq"] for row in rows] == list(range(1, len(rows) + 1))
+    assert metadata["event_count"] == len(rows)
+    assert metadata["ledger_sha256"] == hashlib.sha256(
+        recorders[0].trajectory_file.read_bytes()
+    ).hexdigest()
+    assert metadata["compressed_findings_count"] == 1  # Last yielded state survives failure.
+
+    reads = [row for row in rows if row["step_type"] == "source.read"]
+    decisions = [row for row in rows if row["step_type"] == "validation.decision"]
+    aggregates = [row for row in rows if row["step_type"] == "validation"]
+    if outcome == "no_candidates":
+        assert reads == decisions == read_arguments == []
+        assert aggregates[0]["payload"]["total_candidates"] == 0
+    else:
+        assert read_arguments == [{"filepath": "app.py", "start_line": 1, "end_line": 1_000_000}]
+        assert len(reads) == 1
+        assert reads[0]["payload"]["text"] == source
+        assert reads[0]["payload"]["text_sha256"] == hashlib.sha256(source.encode()).hexdigest()
+        if outcome == "analysis_failure":
+            assert decisions == aggregates == []
+            assert "Audit complete." not in capsys.readouterr().out
+        else:
+            assert decisions[0]["payload"]["disposition"] == outcome
+            assert decisions[0]["payload"]["source_read_ref"] == reads[0]["seq"]
+            assert aggregates[0]["payload"]["verified_count"] == int(outcome == "verified")
+
+
+def test_audit_preserves_original_error_when_failure_capture_fails(monkeypatch, tmp_path, capsys):
+    recorders = _run_audit(monkeypatch, tmp_path, _FailingGraph())
+
+    def fail_finish(*_args):
+        raise OSError("terminal append failed")
+
+    monkeypatch.setattr(TrajectoryRecorder, "finish_run", fail_finish)
+    with pytest.raises(RuntimeError, match="graph failed"):
+        main.audit(target=str(tmp_path), plan="audit")
+
+    output = capsys.readouterr()
+    assert "terminal append failed" in output.err
+    assert "Audit complete." not in output.out
+    assert not recorders[0].metadata_file.exists()

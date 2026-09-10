@@ -2,6 +2,7 @@ import hashlib
 import json
 import math
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -123,6 +124,14 @@ def test_production_recorder_rejects_non_strict_json_without_advancing_sequence(
     assert recorder.last_seq == 1
     assert recorder.trajectory_file.read_text(encoding="utf-8").count("\n") == 1
 
+    recorder.finish_run(
+        "failed", {"stage": "graph_execution", "type": "ValueError", "message": "invalid JSON"}
+    )
+    recorder.finalize({"compressed_findings": []})
+    metadata = json.loads(recorder.metadata_file.read_text(encoding="utf-8"))
+    assert metadata["execution_status"] == "failed"
+    assert metadata["event_count"] == 2
+
 
 def test_production_finalization_failure_does_not_publish_valid_metadata(tmp_path, monkeypatch):
     recorder = TrajectoryRecorder(
@@ -139,3 +148,73 @@ def test_production_finalization_failure_does_not_publish_valid_metadata(tmp_pat
 
     assert not recorder.metadata_file.exists()
     assert not list(tmp_path.glob("*.tmp"))
+
+
+@pytest.mark.parametrize("failure_stage", ["write", "flush", "fsync"])
+def test_production_append_failure_leaves_an_uncommitted_prefix(
+    tmp_path, monkeypatch, failure_stage
+):
+    recorder = TrajectoryRecorder(
+        run_id=str(uuid.uuid4()),
+        output_dir=str(tmp_path),
+        contract_version=PRODUCTION_CONTRACT_VERSION,
+    )
+    recorder.start_run("task", "/target")
+    append_error = OSError(f"{failure_stage} failed")
+    original_open = Path.open
+
+    class FailingAppend:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.stream.close()
+
+        def write(self, text):
+            if failure_stage == "write":
+                self.stream.write(text[:20])
+                raise append_error
+            return self.stream.write(text)
+
+        def flush(self):
+            self.stream.flush()
+            if failure_stage == "flush":
+                raise append_error
+
+        def fileno(self):
+            return self.stream.fileno()
+
+    def faulty_open(path, mode="r", *args, **kwargs):
+        stream = original_open(path, mode, *args, **kwargs)
+        if path == recorder.trajectory_file and mode == "a":
+            return FailingAppend(stream)
+        return stream
+
+    def fail_fsync(_fd):
+        raise append_error
+
+    with monkeypatch.context() as fault:
+        fault.setattr(Path, "open", faulty_open)
+        if failure_stage == "fsync":
+            fault.setattr(trajectory_module.os, "fsync", fail_fsync)
+        with pytest.raises(OSError) as raised:
+            recorder.record_step("observation", {"value": 1})
+
+    assert raised.value is append_error
+    prefix = recorder.trajectory_file.read_bytes()
+    assert recorder.last_seq == 1
+    if failure_stage == "write":
+        assert not prefix.endswith(b"\n")
+
+    with pytest.raises(RuntimeError, match="unusable"):
+        recorder.finish_run(
+            "failed", {"stage": "graph_execution", "type": "OSError", "message": str(append_error)}
+        )
+    with pytest.raises(RuntimeError, match="unusable"):
+        recorder.finalize({"compressed_findings": []})
+
+    assert recorder.trajectory_file.read_bytes() == prefix
+    assert not recorder.metadata_file.exists()

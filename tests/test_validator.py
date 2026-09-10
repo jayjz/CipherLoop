@@ -240,3 +240,39 @@ def test_production_validator_refuses_unproven_compressed_provenance(tmp_path):
             {"messages": [], "compressed_findings": [{"top_findings": ["malformed"]}]},
             {"configurable": {"__trajectory_recorder__": recorder}},
         )
+
+
+def test_production_validator_retains_read_before_analysis_failure(monkeypatch, tmp_path):
+    reads = []
+    analysis_error = RecursionError("analysis failed")
+
+    def read(arguments):
+        reads.append(arguments)
+        return VULNERABLE_SOURCE
+
+    def fail_analysis(*_args, **_kwargs):
+        raise analysis_error
+
+    monkeypatch.setattr("cipherloop.executor.validator.read_file", SimpleNamespace(invoke=read))
+    monkeypatch.setattr("cipherloop.executor.validator._find_taint_trace_with_reason", fail_analysis)
+    recorder = _production_recorder(tmp_path)
+    state = _production_state(recorder, "[ERROR] app.py:6 - Command injection")
+
+    with pytest.raises(RecursionError) as raised:
+        validator_node(state, {"configurable": {"__trajectory_recorder__": recorder}})
+
+    assert raised.value is analysis_error
+    assert reads == [{"filepath": "app.py", "start_line": 1, "end_line": 1_000_000}]
+    rows = _rows(recorder)
+    assert rows[-2]["step_type"] == "validation.candidate"
+    assert rows[-1]["step_type"] == "source.read"
+    assert rows[-1]["payload"] == {
+        "candidate_ref": rows[-2]["seq"],
+        "arguments": reads[0],
+        "status": "returned",
+        "text": VULNERABLE_SOURCE,
+        "text_sha256": hashlib.sha256(VULNERABLE_SOURCE.encode("utf-8")).hexdigest(),
+        "error": None,
+    }
+    assert not any(row["step_type"] in {"validation.decision", "validation"} for row in rows)
+    assert state["messages"] == []

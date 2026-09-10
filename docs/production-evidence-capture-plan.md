@@ -1,8 +1,79 @@
 # CipherLoop production evidence capture plan
 
-Reconnaissance dated 2026-09-09. CipherLoop branch: `main`; HEAD:
+Original reconnaissance dated 2026-09-09. CipherLoop branch: `main`; HEAD:
 `f03a1e186e491cf24aa0f0e0671cac766c1fa8ab`. Initial working tree was clean.
-This is a design, not an implemented or runtime-tested contract.
+Sections 1–11 preserve that design and historical inventory; they are not a claim
+that every proposed field or consumer has been implemented.
+
+## P0.1 implementation and closure status — 2026-09-09
+
+Reviewed `feat/production-evidence-capture` at
+`7f9eddb2b3310ee0de8b01dda4e1559e914b4568`, with a clean initial worktree:
+
+- **P0.1A**, `26e966839d337a4e74a7069a8e2e9c4880f89211`: explicit production mode,
+  full UUID reservation, original task/start before preflight, observed
+  completed/failed/interrupted outcomes, synchronized ledger writes, and atomic
+  metadata publication with sequence count and ledger hash. Legacy mode remains.
+- **P0.1B**, `7f9eddb2b3310ee0de8b01dda4e1559e914b4568`: exact compression records,
+  `validation.candidate` attempts with integer `cycle`, source-read text/hash,
+  verified/rejected/skipped decisions and reasons, verified source slices, and
+  per-cycle aggregate counts. Source evidence stays outside active messages.
+- **Closure fixes under review:** stop appending/finalizing after a possibly torn
+  write; retain source reads before AST analysis can raise. Regression tests cover
+  these failures without changing detection or the tested event format.
+
+**Release contract unresolved.** The tested format differs from the design below:
+there is no `validation.started`/`cycle_ref` (including on an aborted empty cycle),
+and the event is `validation.candidate`, not `candidate`. Start events omit
+`tool_capture_boundary` and `models`. Metadata omits `evidence_status`,
+`final_finding_refs`, and `report_ref`; recorded verified decisions are not
+reconciled with the last yielded state's verified findings. Rejection slices are
+null even for nonempty syntax/no-trace inputs. Directory synchronization after
+metadata publication is also absent. These are open closure items, not silently
+waived requirements or instructions to migrate the tested format.
+
+A committed failed run remains failure evidence. Missing metadata remains
+incomplete; storage failure or uncatchable termination cannot guarantee a terminal
+event. Completed execution and zero candidates do not prove scanner success, target
+safety, or task success. TraceForge P0.2 ingestion and independent production
+evaluation are separate work and have not been performed in this closure review.
+
+### Offline closure verification
+
+`README.md` documents `venv` and `pip install -e ".[dev]"`; `pyproject.toml`
+declares pytest/Ruff and supplies the lint settings. The existing Python 3.12.3
+environment lacked `typer` and `langchain-openai`. Declared dependencies were
+installed into `/tmp/cipherloop-p01-deps` and `/tmp/cipherloop-p01-openai-deps`,
+with `langchain-core==1.6.0` retained. The full-suite command below prioritizes
+existing venv packages; `pip check` with that path reports no broken requirements.
+The repository environment and dependency declarations were not changed.
+
+Exact verification commands from the repository root:
+
+```sh
+PYTHONPATH=/tmp/cipherloop-p01-deps:src timeout 30s venv/bin/python -m pytest -q tests/test_trajectory.py tests/test_compressor.py tests/test_validator.py tests/test_production_evidence.py
+PYTHONPATH=venv/lib/python3.12/site-packages:/tmp/cipherloop-p01-deps:/tmp/cipherloop-p01-openai-deps:src timeout 60s venv/bin/python -m pytest -q
+venv/bin/ruff check .
+venv/bin/ruff check src/cipherloop/core/trajectory.py src/cipherloop/executor/validator.py tests/test_trajectory.py tests/test_validator.py tests/test_production_evidence.py
+git diff --check
+git rev-parse HEAD main
+git status --short --branch
+```
+
+Results: **39 focused tests passed; 52 full-suite tests passed**, including nine
+added regression/integration cases. The four new append/analysis regression cases
+first failed on the original implementation. Initial collection and configuration
+failures were missing-package setup failures; the real async graph tests stalled
+in the command sandbox and passed outside it with runtime services mocked. No
+Docker or live model service was used. The full suite was rerun only after setup
+failures were resolved.
+
+Ruff 0.16.4 passes on all five Python files changed during closure. Repository-wide
+Ruff still fails with **31 pre-existing diagnostics**: the same executable reports
+52 on an isolated copy of `main`'s Python files/config, with no new diagnostics
+by file/rule/message in the current tree. Unrelated lint cleanup was not performed.
+`git diff --check` passes. P0.1 release closure remains blocked by that lint gate
+and the unresolved release contract above.
 
 ## 1. Scope, instructions, and evidence inventory
 

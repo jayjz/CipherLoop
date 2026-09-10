@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from langchain_core.runnables import RunnableConfig
 
 from cipherloop.core.state import AuditState, CodeLocation, VerifiedFinding
+from cipherloop.core.trajectory import TrajectoryRecorder
 from cipherloop.tools.filesystem import read_file
 
 SOURCE_PREFIXES = (
@@ -43,6 +44,7 @@ class _ValidationEvidence:
     source_code: str | None
     reason: str | None
     error: Exception | None
+    source_read_ref: int | None = None
 
 
 def _dotted_name(node: ast.AST) -> str | None:
@@ -178,20 +180,55 @@ def _find_taint_trace_with_reason(
     return None, "no_taint_trace"
 
 
-def _inspect_finding_evidence(target_file: str, line_num: int) -> _ValidationEvidence:
+def _inspect_finding_evidence(
+    target_file: str,
+    line_num: int,
+    *,
+    recorder: TrajectoryRecorder | None = None,
+    candidate_ref: int | None = None,
+) -> _ValidationEvidence:
+    arguments = {"filepath": target_file, "start_line": 1, "end_line": 1_000_000}
+    source_code = None
+    read_error = None
     try:
-        source_code = read_file.invoke(
-            {"filepath": target_file, "start_line": 1, "end_line": 1_000_000}
-        )
+        source_code = read_file.invoke(arguments)
     except Exception as exc:  # noqa: BLE001 - preserve the existing all-read-failure rejection.
-        return _ValidationEvidence(None, None, "read_exception", exc)
+        read_error = exc
+
+    source_read_ref = None
+    if recorder is not None:
+        # Retain the observed read before parsing/walking can fail or be interrupted.
+        source_read_ref = recorder.record_step(
+            "source.read",
+            {
+                "candidate_ref": candidate_ref,
+                "arguments": arguments,
+                "status": "error" if read_error is not None else "returned",
+                "text": source_code,
+                "text_sha256": (
+                    hashlib.sha256(source_code.encode("utf-8")).hexdigest()
+                    if read_error is None else None
+                ),
+                "error": (
+                    {
+                        "stage": "validation_read",
+                        "type": type(read_error).__name__,
+                        "message": str(read_error),
+                    }
+                    if read_error is not None else None
+                ),
+            },
+        )
+
+    if read_error is not None:
+        return _ValidationEvidence(None, None, "read_exception", read_error, source_read_ref)
 
     if "Tool Execution Error" in source_code or "System Error" in source_code:
-        return _ValidationEvidence(None, source_code, "read_error_marker", None)
+        return _ValidationEvidence(None, source_code, "read_error_marker", None, source_read_ref)
     trace, reason = _find_taint_trace_with_reason(
         source_code, target_file, expected_sink_line=line_num
     )
-    return _ValidationEvidence(trace, source_code, reason, None)
+    return _ValidationEvidence(trace, source_code, reason, None, source_read_ref)
 
 
 def verify_finding_evidence(target_file: str, line_num: int) -> TaintTrace | None:
@@ -289,39 +326,11 @@ def validator_node(state: AuditState, config: RunnableConfig | None = None) -> d
                 continue
             total_candidates += 1
             severity, path, line_num, description = parsed
-            evidence = _inspect_finding_evidence(path, line_num)
-            if is_production:
-                arguments = {"filepath": path, "start_line": 1, "end_line": 1_000_000}
-                if evidence.error is not None:
-                    source_read_ref = recorder.record_step(
-                        "source.read",
-                        {
-                            "candidate_ref": candidate_ref,
-                            "arguments": arguments,
-                            "status": "error",
-                            "text": None,
-                            "text_sha256": None,
-                            "error": {
-                                "stage": "validation_read",
-                                "type": type(evidence.error).__name__,
-                                "message": str(evidence.error),
-                            },
-                        },
-                    )
-                else:
-                    source_read_ref = recorder.record_step(
-                        "source.read",
-                        {
-                            "candidate_ref": candidate_ref,
-                            "arguments": arguments,
-                            "status": "returned",
-                            "text": evidence.source_code,
-                            "text_sha256": hashlib.sha256(
-                                evidence.source_code.encode("utf-8")
-                            ).hexdigest(),
-                            "error": None,
-                        },
-                    )
+            evidence = _inspect_finding_evidence(
+                path, line_num, recorder=recorder if is_production else None,
+                candidate_ref=candidate_ref,
+            )
+            source_read_ref = evidence.source_read_ref
             if evidence.trace is None:
                 if is_production:
                     recorder.record_step(
