@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 
-PRODUCTION_CONTRACT_VERSION = "cipherloop-production-v1"
+PRODUCTION_CONTRACT_VERSION = "cipherloop-production-v2"
 _EXECUTION_STATUSES = {"completed", "failed", "interrupted"}
 
 
@@ -38,6 +38,7 @@ class TrajectoryRecorder:
         self._compression_refs: dict[int, int] = {}
         self._validation_cycle = 0
         self._append_failed = False
+        self._ledger_hash = hashlib.sha256()
 
         if self.is_production:
             self._validate_production_run_id()
@@ -89,6 +90,10 @@ class TrajectoryRecorder:
             raise ValueError("Production step_type must be a non-empty string")
         if not isinstance(data, dict):
             raise TypeError("Production event payload must be a JSON object")
+        if self._start_ref is None and (step_type != "run.started" or self._seq != 0):
+            raise RuntimeError("Production ledger must begin with run.started")
+        if self._start_ref is not None and step_type == "run.started":
+            raise RuntimeError("run.started has already been recorded")
 
         next_seq = self._seq + 1
         record = {
@@ -110,6 +115,7 @@ class TrajectoryRecorder:
             self._append_failed = True
             raise
         self._seq = next_seq
+        self._ledger_hash.update((serialized + "\n").encode("utf-8"))
         return next_seq
 
     def start_run(self, task_description: str, target_directory: str) -> int:
@@ -126,6 +132,8 @@ class TrajectoryRecorder:
             {
                 "task": {"description": task_description},
                 "target_directory": target_directory,
+                "tool_capture_boundary": "compressor_observed",
+                "models": None,
             },
         )
         return self._start_ref
@@ -244,9 +252,11 @@ class TrajectoryRecorder:
                 json.dump(summary, f, indent=2, default=str)
             return
 
-        self._finalize_production(summary)
+        self._finalize_production(summary, final_state)
 
-    def _finalize_production(self, summary: dict[str, Any]) -> None:
+    def _finalize_production(
+        self, summary: dict[str, Any], final_state: dict[str, Any]
+    ) -> None:
         if self._append_failed:
             raise RuntimeError("Production ledger is unusable after an append failure")
         if self._start_ref is None or self._finish_ref is None or self._execution_status is None:
@@ -257,15 +267,22 @@ class TrajectoryRecorder:
         ledger = self.trajectory_file.read_bytes()
         if not ledger.endswith(b"\n") or ledger.count(b"\n") != self._seq:
             raise RuntimeError("Production ledger is not a contiguous finalized event stream")
+        if hashlib.sha256(ledger).digest() != self._ledger_hash.digest():
+            raise RuntimeError("Production ledger changed after recording")
+        rows = [json.loads(line) for line in ledger.splitlines()]
+        references = self._reconcile_final_state(rows, final_state)
 
         production_summary = {
             **summary,
+            **references,
             "contract_version": PRODUCTION_CONTRACT_VERSION,
             "start_ref": self._start_ref,
             "finish_ref": self._finish_ref,
             "execution_status": self._execution_status,
             "ledger_sha256": hashlib.sha256(ledger).hexdigest(),
             "event_count": self._seq,
+            "evidence_status": "complete",
+            "report_ref": None,
         }
         serialized = json.dumps(production_summary, indent=2, allow_nan=False) + "\n"
         temporary_file = self.output_dir / f".{self.metadata_file.name}.{uuid.uuid4().hex}.tmp"
@@ -277,6 +294,84 @@ class TrajectoryRecorder:
             if os.path.lexists(self.metadata_file):
                 raise FileExistsError(f"Production metadata path already exists: {self.metadata_file}")
             os.replace(temporary_file, self.metadata_file)
+            try:
+                self._sync_output_directory()
+            except BaseException:
+                # Publication has not succeeded. Revoke only this run's new commitment.
+                self.metadata_file.unlink()
+                raise
         finally:
             if temporary_file.exists():
                 temporary_file.unlink()
+
+    def _sync_output_directory(self) -> None:
+        """Persist publication on POSIX; Windows has no directory-fsync API here."""
+        if os.name == "posix":
+            descriptor = os.open(self.output_dir, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+
+    def _reconcile_final_state(
+        self, rows: list[dict[str, Any]], final_state: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Bind the last yielded reducer state to persisted occurrences, never finding IDs.
+
+        This checks producer bookkeeping, not vulnerability truth or run reliability.
+        A failed node can have durable observations absent from the last yielded state.
+        """
+        compressions = [row for row in rows if row["step_type"] == "compression"]
+        compressed = final_state.get("compressed_findings", [])
+        for index, row in enumerate(compressions):
+            if row["payload"]["state_index"] != index:
+                raise RuntimeError("Noncontiguous production compression state indices")
+        def same_json(left, right):
+            return json.dumps(left, sort_keys=True, allow_nan=False) == json.dumps(
+                right, sort_keys=True, allow_nan=False
+            )
+
+        if not same_json(compressed, [row["payload"]["finding"]
+                                     for row in compressions[:len(compressed)]]):
+            raise RuntimeError("Final compressed state does not match recorded evidence")
+
+        verified = []
+        retained_boundaries = {0}
+        active_cycle = None
+        validated_compression_count = 0
+        pending = []
+        for row in rows:
+            kind, payload = row["step_type"], row["payload"]
+            if kind == "validation.started":
+                if active_cycle is not None:
+                    raise RuntimeError("Overlapping validation cycles")
+                active_cycle = row["seq"]
+                validated_compression_count = payload["compressed_findings_count"]
+                pending = []
+            elif kind == "validation.decision" and payload["disposition"] == "verified":
+                if active_cycle is None:
+                    raise RuntimeError("Verified decision outside a validation cycle")
+                pending.append(row)
+            elif kind == "validation":
+                if active_cycle is None or payload["cycle_ref"] != active_cycle:
+                    raise RuntimeError("Validation aggregate has no matching start")
+                verified.extend(pending)
+                retained_boundaries.add(len(verified))
+                active_cycle = None
+
+        findings = final_state.get("verified_findings", [])
+        if len(findings) not in retained_boundaries or not same_json(
+            findings, [row["payload"]["finding"] for row in verified[:len(findings)]]
+        ):
+            raise RuntimeError("Final verified state does not match completed validation evidence")
+        if self._execution_status == "completed" and (
+            active_cycle is not None
+            or len(findings) != len(verified)
+            or len(compressed) != len(compressions)
+            or validated_compression_count != len(compressions)
+        ):
+            raise RuntimeError("Completed run has unreconciled evidence")
+        return {
+            "final_compression_refs": [row["seq"] for row in compressions[:len(compressed)]],
+            "final_finding_refs": [row["seq"] for row in verified[:len(findings)]],
+        }

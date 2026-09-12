@@ -1,6 +1,6 @@
 # CipherLoop / TrajectoryLab Strategy & Engineering Roadmap
 
-**Status date:** 2026-09-09  
+**Status date:** 2026-09-12
 **Role:** durable project source of truth for human contributors and coding agents.  
 **Repositories:** `jayjz/CipherLoop` and `jayjz/TraceForge` (local Windows folder: `TrajectoryLab`).
 
@@ -48,14 +48,14 @@ The moat should not depend on owning one LLM, scanner, or orchestration framewor
 
 ## CipherLoop
 
-At the P0.1 closure review (initial worktree clean):
+At the 2026-09-12 continuation review (initial worktree clean):
 
 - `main`: `f03a1e186e491cf24aa0f0e0671cac766c1fa8ab`
-- `feat/production-evidence-capture`: `7f9eddb2b3310ee0de8b01dda4e1559e914b4568`
+- `feat/production-evidence-capture`: `37fcbe480f668605aee7e51b6f976c22331a6ad0`
 - P0.1A lifecycle commit: `26e966839d337a4e74a7069a8e2e9c4880f89211`
 - P0.1B validation-evidence commit: `7f9eddb2b3310ee0de8b01dda4e1559e914b4568`
 
-`feat/production-evidence-capture` is four commits ahead of `main`, zero behind.
+`feat/production-evidence-capture` is five commits ahead of `main`, zero behind.
 The committed delta includes the operating protocol, roadmap, evidence design,
 P0.1A/P0.1B implementation, and focused tests.
 
@@ -97,13 +97,14 @@ validation attempts/decisions, rejection reasons, analyzed source text/hashes, a
 verified source slices. Failed/interrupted execution is distinct from completed
 execution; missing metadata denotes incomplete evidence.
 
-P0.1 release closure remains open. The tested format omits the design's final-state
-finding references/reconciliation, validation-cycle start events, explicit evidence
-status, report/provenance availability fields, and rejection slices. Publication
-does not synchronize the directory. See the current-status annotation in
-`docs/production-evidence-capture-plan.md` before treating its historical inventory
-or proposed contract as current behavior. Production ingestion is a separate P0.2
-milestone; no independent production-evaluation claim follows from producer tests.
+The current worktree closes the bounded offline P0.1 producer contract as
+`cipherloop-production-v2`: durable validation starts/references, exact final-state
+reconciliation, explicit observation/availability fields, rejection spans, and
+POSIX directory synchronization join the checkpoint's append poisoning and
+source-before-analysis protections. See `docs/production-evidence-contract.md` for
+the current contract; the original v1 plan is historical. Existing unversioned
+capture remains compatible. Checkpoint v1 is explicitly unsupported for ingestion.
+No live audit or power-loss guarantee follows from offline producer tests.
 
 ## TrajectoryLab / TraceForge
 
@@ -117,11 +118,13 @@ Implemented:
 - artifact ingestion,
 - schema and provenance checks,
 - deterministic independent fixture oracle.
+- separate artifact-only production-v2 ingestion with integrity, source-location,
+  lifecycle, and final-state checks; no CipherLoop runtime imports.
 
 Explicitly not established:
 - general detection accuracy,
 - scanner coverage,
-- production ingestion,
+- live production audit ingestion (the production-contract smoke uses scripted observations),
 - general trajectory scoring,
 - calibrated LLM judging,
 - broad agent compatibility.
@@ -422,11 +425,12 @@ Only after users:
 **Exit:** humans/agents have one durable strategy reference.
 
 ## Phase 1 — CipherLoop production evidence contract
-**P0.1A and P0.1B implemented; release closure pending.**
+**P0.1 closed for the bounded offline producer contract; changes remain local.**
 
 P0.1A captures the production run lifecycle; P0.1B captures source-backed
-validation decisions. Close the remaining contract and verification gaps recorded
-in `docs/production-evidence-capture-plan.md` before declaring Phase 1 complete.
+validation decisions. The closure slice establishes the current v2 contract in
+`docs/production-evidence-contract.md`, including last-state occurrence references
+and fail-closed capture behavior. Inherited lint debt is recorded separately.
 
 Required:
 - contract version,
@@ -448,19 +452,23 @@ zero-candidate observation, rejected candidate, failed run, and interrupted/inco
 run, with an agreed final-summary contract. A negative observation is not proof of safety.
 
 ## Phase 2 — TrajectoryLab production adapter
-**P0.2: separate work after P0.1 closure; outside this review.**
+**P0.2: initial artifact-only reader implemented and verified offline.**
 
-Build a separate production adapter; preserve fixture baseline.
+A separate production adapter preserves the fixture baseline. Its scope is
+capture integrity and source locations, with task success explicitly unavailable.
 
 Required:
-- production-v1 ingestion,
+- production-v2 ingestion,
 - seq/ref integrity,
 - lifecycle validation,
 - hash/slice validation,
 - finding/decision normalization,
 - explicit incompatible/incomplete errors.
 
-**Exit:** real production-style CipherLoop artifact ingests without synthetic sidecars.
+**Offline exit established:** the production CLI/graph smoke emits two-file bundles
+that ingest after copying without source-target access, synthetic sidecars, or
+CipherLoop runtime imports. Live sandbox/model execution remains the next bounded
+verification milestone; the smoke explicitly scripts tool results and source reads.
 
 ## Phase 3 — Cross-repo contract CI
 - pin compatible revisions,
@@ -550,10 +558,10 @@ All are acceptable if supported by evidence.
 # 13. Immediate execution order
 
 ```text
-1. Close P0.1 failure-path, release-contract, and verification gaps.
-2. Review the P0.1 diff; perform Git publication only in a separately authorized task.
-3. Build the separate P0.2 TrajectoryLab production adapter.
-4. Add cross-repo compatibility CI.
+1. Capture one bounded live sandbox run and ingest its unchanged v2 artifacts.
+2. Review the producer/consumer diffs; perform Git publication only when authorized.
+3. Preserve offline production-contract and frozen-baseline regression gates.
+4. Add cross-repo compatibility CI after compatible revisions are published.
 5. Build the first independent benchmark corpus.
 6. Measure before broad scoring or UI.
 ```

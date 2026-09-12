@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import sys
@@ -9,7 +10,7 @@ from langgraph.graph import END, START, StateGraph
 
 from cipherloop import main
 from cipherloop.core.state import AuditState
-from cipherloop.core.trajectory import TrajectoryRecorder
+from cipherloop.core.trajectory import PRODUCTION_CONTRACT_VERSION, TrajectoryRecorder
 from cipherloop.executor.compressor import compressor_node
 from cipherloop.executor.validator import validator_node
 
@@ -73,6 +74,8 @@ def test_audit_records_completed_lifecycle(monkeypatch, tmp_path):
     assert rows[0]["payload"] == {
         "task": {"description": "original plan"},
         "target_directory": str(tmp_path.resolve()),
+        "tool_capture_boundary": "compressor_observed",
+        "models": None,
     }
     assert rows[-1]["payload"] == {"execution_status": "completed", "error": None}
     assert metadata["execution_status"] == "completed"
@@ -137,7 +140,7 @@ def test_ledger_without_valid_metadata_is_incomplete_contract_artifact(tmp_path)
     recorder = TrajectoryRecorder(
         run_id="00000000-0000-4000-8000-000000000001",
         output_dir=str(tmp_path),
-        contract_version="cipherloop-production-v1",
+        contract_version=PRODUCTION_CONTRACT_VERSION,
     )
     recorder.start_run("task", "/target")
     recorder.finish_run("completed", None)
@@ -216,6 +219,13 @@ def test_production_graph_retains_evidence_through_cli_lifecycle(
         recorders[0].trajectory_file.read_bytes()
     ).hexdigest()
     assert metadata["compressed_findings_count"] == 1  # Last yielded state survives failure.
+    assert metadata["evidence_status"] == "complete"
+    assert metadata["report_ref"] is None
+    assert len(metadata["final_finding_refs"]) == int(outcome == "verified")
+    for ref in metadata["final_finding_refs"]:
+        decision = rows[ref - 1]
+        assert decision["step_type"] == "validation.decision"
+        assert decision["payload"]["disposition"] == "verified"
 
     reads = [row for row in rows if row["step_type"] == "source.read"]
     decisions = [row for row in rows if row["step_type"] == "validation.decision"]
@@ -250,4 +260,32 @@ def test_audit_preserves_original_error_when_failure_capture_fails(monkeypatch, 
     output = capsys.readouterr()
     assert "terminal append failed" in output.err
     assert "Audit complete." not in output.out
+    assert not recorders[0].metadata_file.exists()
+
+
+@pytest.mark.parametrize(("error", "status"), [
+    (RuntimeError("graph build failed"), "failed"),
+    (asyncio.CancelledError("cancelled"), "interrupted"),
+])
+def test_audit_captures_graph_build_failure_or_cancellation(monkeypatch, tmp_path, error, status):
+    recorders = _run_audit(monkeypatch, tmp_path, error)
+    with pytest.raises(type(error)) as raised:
+        main.audit(target=str(tmp_path), plan="audit")
+    assert raised.value is error
+    rows, metadata = _artifacts(recorders[0])
+    assert metadata["execution_status"] == status
+    assert rows[-1]["payload"]["error"]["stage"] == "graph_build"
+    assert metadata["final_finding_refs"] == metadata["final_compression_refs"] == []
+
+
+def test_audit_never_announces_completion_after_finalization_failure(monkeypatch, tmp_path, capsys):
+    recorders = _run_audit(monkeypatch, tmp_path, _SuccessfulGraph())
+
+    def fail_finalize(*_args):
+        raise OSError("metadata unavailable")
+
+    monkeypatch.setattr(TrajectoryRecorder, "finalize", fail_finalize)
+    with pytest.raises(OSError, match="metadata unavailable"):
+        main.audit(target=str(tmp_path), plan="audit")
+    assert "Audit complete." not in capsys.readouterr().out
     assert not recorders[0].metadata_file.exists()

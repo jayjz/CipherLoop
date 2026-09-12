@@ -289,6 +289,16 @@ def validator_node(state: AuditState, config: RunnableConfig | None = None) -> d
     recorder = config.get("configurable", {}).get("__trajectory_recorder__")
     is_production = bool(recorder and recorder.is_production)
     cycle = recorder.next_validation_cycle() if is_production else None
+    cycle_ref = None
+    if is_production:
+        cycle_ref = recorder.record_step(
+            "validation.started",
+            {
+                "cycle": cycle,
+                "compressed_findings_count": len(compressed),
+                "verified_findings_count": len(state.get("verified_findings", [])),
+            },
+        )
     total_candidates = 0
 
     for state_index, item in enumerate(compressed):
@@ -304,6 +314,7 @@ def validator_node(state: AuditState, config: RunnableConfig | None = None) -> d
                     "validation.candidate",
                     {
                         "cycle": cycle,
+                        "cycle_ref": cycle_ref,
                         "compression_ref": compression_ref,
                         "summary_index": summary_index,
                         "summary": summary,
@@ -341,7 +352,15 @@ def validator_node(state: AuditState, config: RunnableConfig | None = None) -> d
                             "reason": evidence.reason,
                             "source_read_ref": source_read_ref,
                             "finding": None,
-                            "source_slice": None,
+                            "source_slice": (
+                                {
+                                    "source_read_ref": source_read_ref,
+                                    "start_line": 1,
+                                    "end_line": len(evidence.source_code.splitlines()),
+                                }
+                                if evidence.reason in {"syntax_error", "no_taint_trace"}
+                                and evidence.source_code else None
+                            ),
                         },
                     )
                 continue
@@ -373,6 +392,7 @@ def validator_node(state: AuditState, config: RunnableConfig | None = None) -> d
         }
         if is_production:
             payload["cycle"] = cycle
+            payload["cycle_ref"] = cycle_ref
         recorder.record_step(
             "validation",
             payload,

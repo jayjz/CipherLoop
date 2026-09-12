@@ -5,7 +5,35 @@ Original reconnaissance dated 2026-09-09. CipherLoop branch: `main`; HEAD:
 Sections 1–11 preserve that design and historical inventory; they are not a claim
 that every proposed field or consumer has been implemented.
 
-## P0.1 implementation and closure status — 2026-09-09
+## Current closure status — 2026-09-12
+
+The checkpoint `37fcbe480f668605aee7e51b6f976c22331a6ad0` retained valid append-failure
+poisoning and source-before-analysis fixes but did **not** close P0.1. The current
+implementation closes the bounded offline producer contract and supplies a separate
+TraceForge artifact reader. The authoritative current format is documented in
+[production-evidence-contract.md](production-evidence-contract.md).
+
+The discriminator is now **`cipherloop-production-v2`**. This intentionally rejects
+checkpoint v1 evidence rather than retroactively treating missing closure fields
+as valid. Unversioned recorder behavior and the frozen TraceForge baseline remain.
+
+Resolved drift: retain `validation.candidate` and integer `cycle`; add durable
+`validation.started` and `cycle_ref`; declare the compressor observation boundary
+and null model provenance; reconcile final finding/compression occurrences against
+the last yielded reducer state; retain rejection spans; expose null report reference
+and explicit capture completeness; synchronize POSIX metadata publication. Recorded
+execution completion is distinct from successful evidence publication and from any
+independent evaluation. The producer does not grade its reliability.
+
+Full dispatch tracing, measured model provenance, report capture, physical-file
+snapshots, general detection/task-success evaluation, and live audit verification
+remain intentionally deferred. The filesystem tool's returned text is decoded and
+stripped; the contract hashes the actual analyzed input. The 31 inherited repository
+lint diagnostics are tracked debt, not newly introduced contract failures.
+
+The original review and proposed v1 design below are historical and superseded.
+
+## Historical P0.1 implementation and closure review — 2026-09-09
 
 Reviewed `feat/production-evidence-capture` at
 `7f9eddb2b3310ee0de8b01dda4e1559e914b4568`, with a clean initial worktree:

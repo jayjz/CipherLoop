@@ -152,6 +152,7 @@ def test_production_validator_retains_verified_source_backed_event_chain(monkeyp
         "rejected_count": 0,
         "candidate_to_verified_ratio": 1.0,
         "cycle": 1,
+        "cycle_ref": events["validation.started"]["seq"],
     }
 
 
@@ -195,7 +196,13 @@ def test_production_validator_records_each_rejection_branch(
     assert len(reads) == int(has_source_read)
     assert decisions[0]["payload"]["reason"] == reason
     assert decisions[0]["payload"]["finding"] is None
-    assert decisions[0]["payload"]["source_slice"] is None
+    if reason in {"syntax_error", "no_taint_trace"} and source:
+        assert decisions[0]["payload"]["source_slice"] == {
+            "source_read_ref": reads[0]["seq"], "start_line": 1,
+            "end_line": len(source.splitlines()),
+        }
+    else:
+        assert decisions[0]["payload"]["source_slice"] is None
     assert decisions[0]["payload"]["disposition"] == (
         "skipped" if reason == "malformed_summary" else "rejected"
     )
@@ -225,6 +232,7 @@ def test_production_validator_cycles_zero_candidates_and_duplicate_attempts(monk
         "rejected_count": 0,
         "candidate_to_verified_ratio": None,
         "cycle": 1,
+        "cycle_ref": 2,
     }
     assert [payload["cycle"] for payload in aggregates] == [1, 2, 3]
     assert len(candidates) == 2
