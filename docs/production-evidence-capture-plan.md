@@ -32,6 +32,10 @@ stripped; the contract hashes the actual analyzed input. The 31 inherited reposi
 lint diagnostics are tracked debt, not newly introduced contract failures.
 
 The original review and proposed v1 design below are historical and superseded.
+The subsequent [adversarial release review](release-review-2026-09-12.md) tightens
+state consistency, ledger identity, evaluator error handling, and offline CI.
+A real missing-Docker preflight failure has been ingested correctly; successful
+live sandbox/model execution is still deferred.
 
 ## Historical P0.1 implementation and closure review — 2026-09-09
 

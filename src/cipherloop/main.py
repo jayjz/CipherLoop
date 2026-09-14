@@ -35,16 +35,20 @@ def check_prerequisites(target_dir: str):
         sys.exit(1)
 
 def _sandbox_mount_matches(container_id: str, target_dir: str) -> bool:
-    """Return whether the named sandbox mounts exactly the requested target."""
+    """Require the named sandbox, network isolation, and the requested read-only target."""
     inspection = subprocess.run(
-        ["docker", "inspect", container_id], capture_output=True, text=True
+        ["docker", "inspect", container_id], capture_output=True, text=True, check=False
     )
     if inspection.returncode != 0:
         return False
 
     try:
-        mounts = json.loads(inspection.stdout)[0].get("Mounts", [])
-    except (IndexError, TypeError, json.JSONDecodeError):
+        container = json.loads(inspection.stdout)[0]
+        if (container.get("Name") != "/cipherloop-sandbox"
+                or container.get("HostConfig", {}).get("NetworkMode") != "none"):
+            return False
+        mounts = container.get("Mounts", [])
+    except (AttributeError, IndexError, TypeError, json.JSONDecodeError):
         return False
 
     expected = os.path.normcase(os.path.normpath(target_dir))
@@ -52,7 +56,8 @@ def _sandbox_mount_matches(container_id: str, target_dir: str) -> bool:
         if mount.get("Destination") != "/workspace/target_repo":
             continue
         source = mount.get("Source")
-        if source and os.path.normcase(os.path.normpath(source)) == expected:
+        if (source and os.path.normcase(os.path.normpath(source)) == expected
+                and mount.get("RW") is False):
             return True
     return False
 
@@ -84,7 +89,7 @@ def ensure_sandbox_running(target_dir: str):
     
     result = subprocess.run(
         ["docker", "ps", "-q", "-f", "name=cipherloop-sandbox"],
-        capture_output=True, text=True
+        capture_output=True, text=True, check=False
     )
     
     container_id = result.stdout.strip()
@@ -95,13 +100,14 @@ def ensure_sandbox_running(target_dir: str):
 
     try:
         if container_id:
-            typer.echo("⚠️ Sandbox target differs; replacing stale container.")
+            typer.echo("⚠️ Sandbox identity or isolation differs; replacing stale container.")
             subprocess.run(["docker", "rm", "-f", "cipherloop-sandbox"], check=True)
         else:
             subprocess.run(
                 ["docker", "rm", "-f", "cipherloop-sandbox"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                check=False,
             )
         _provision_sandbox(abs_target)
     except subprocess.CalledProcessError:
@@ -158,9 +164,9 @@ def audit(
     
     final_state = initial_state
     
-    async def run_audit():
+    def run_audit():
         nonlocal final_state
-        async for state_snapshot in graph.astream(initial_state, config=config, stream_mode="values"):
+        for state_snapshot in graph.stream(initial_state, config=config, stream_mode="values"):
             final_state = state_snapshot
             
             msgs = state_snapshot.get("messages", [])
@@ -187,7 +193,7 @@ def audit(
         graph = build_graph()
         typer.echo(f"⏳ Executing audit loop [Run ID: {run_id}]...\n")
         stage = "graph_execution"
-        asyncio.run(run_audit())
+        run_audit()
     except (KeyboardInterrupt, asyncio.CancelledError) as exc:
         _record_failed_lifecycle(
             recorder,

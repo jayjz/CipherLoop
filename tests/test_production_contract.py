@@ -181,8 +181,9 @@ def test_metadata_failure_cannot_leave_a_complete_commit(tmp_path, monkeypatch, 
         str(uuid.uuid4()), str(tmp_path), contract_version=PRODUCTION_CONTRACT_VERSION
     )
     recorder.start_run("audit", "/target")
-    recorder.finish_run("completed", None)
     state = {"compressed_findings": [], "verified_findings": []}
+    validator_node(state, {"configurable": {"__trajectory_recorder__": recorder}})
+    recorder.finish_run("completed", None)
     if failure == "serialization":
         state["current_plan"] = object()
     else:
@@ -193,3 +194,61 @@ def test_metadata_failure_cannot_leave_a_complete_commit(tmp_path, monkeypatch, 
         recorder.finalize(state)
     assert not recorder.metadata_file.exists()
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_failed_final_findings_require_their_retained_compressions(tmp_path, monkeypatch):
+    recorder, state, config = capture(tmp_path, monkeypatch)
+    state.update(validator_node(state, config))
+    state["compressed_findings"] = []
+    recorder.finish_run("failed", {"stage": "graph_execution", "type": "Error", "message": "lost"})
+    with pytest.raises(RuntimeError, match="state|compression"):
+        recorder.finalize(state)
+    assert not recorder.metadata_file.exists()
+
+
+def test_lost_validation_reducer_update_cannot_be_hidden_by_identical_findings(tmp_path, monkeypatch):
+    recorder, state, config = capture(tmp_path, monkeypatch)
+    first = validator_node(state, config)["verified_findings"]
+    second = validator_node(state, config)["verified_findings"]  # Stale input still says zero.
+    state["verified_findings"] = first + second
+    recorder.finish_run("completed", None)
+    with pytest.raises(RuntimeError, match="state|validation"):
+        recorder.finalize(state)
+    assert not recorder.metadata_file.exists()
+
+
+def test_completed_run_requires_an_observed_validation_cycle_even_without_tools(tmp_path):
+    recorder = TrajectoryRecorder(
+        str(uuid.uuid4()), str(tmp_path), contract_version=PRODUCTION_CONTRACT_VERSION
+    )
+    recorder.start_run("audit", "/target")
+    recorder.finish_run("completed", None)
+    with pytest.raises(RuntimeError, match="unreconciled"):
+        recorder.finalize({"compressed_findings": [], "verified_findings": []})
+    assert not recorder.metadata_file.exists()
+
+
+@pytest.mark.parametrize("replacement", ["file", "symlink"])
+@pytest.mark.parametrize("stage", ["append", "finalize"])
+def test_replaced_ledger_identity_is_rejected_even_with_identical_bytes(
+    tmp_path, monkeypatch, replacement, stage
+):
+    recorder, state, config = capture(tmp_path, monkeypatch)
+    state.update(validator_node(state, config))
+    if stage == "finalize":
+        recorder.finish_run("completed", None)
+    ledger = recorder.trajectory_file
+    saved = tmp_path / "original.jsonl"
+    ledger.rename(saved)
+    if replacement == "symlink":
+        ledger.symlink_to(saved)
+    else:
+        ledger.write_bytes(saved.read_bytes())
+    before = saved.read_bytes()
+    with pytest.raises(RuntimeError, match="ledger"):
+        if stage == "append":
+            recorder.finish_run("completed", None)
+        else:
+            recorder.finalize(state)
+    assert saved.read_bytes() == before
+    assert not recorder.metadata_file.exists()

@@ -16,20 +16,21 @@ from cipherloop.executor.validator import validator_node
 
 
 class _SuccessfulGraph:
-    async def astream(self, initial_state, **_kwargs):
+    def stream(self, initial_state, **_kwargs):
+        validator_node(initial_state, _kwargs["config"])
         yield initial_state
 
 
 class _FailingGraph:
-    async def astream(self, _initial_state, **_kwargs):
+    def stream(self, _initial_state, **_kwargs):
         raise RuntimeError("graph failed")
-        yield  # pragma: no cover - marks this as an async generator.
+        yield  # pragma: no cover - marks this as a generator.
 
 
 class _InterruptedGraph:
-    async def astream(self, _initial_state, **_kwargs):
+    def stream(self, _initial_state, **_kwargs):
         raise KeyboardInterrupt()
-        yield  # pragma: no cover - marks this as an async generator.
+        yield  # pragma: no cover - marks this as a generator.
 
 
 def _install_graph(monkeypatch, graph_or_error):

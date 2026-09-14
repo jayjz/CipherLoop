@@ -14,7 +14,15 @@
 
 <br>
 
-CipherLoop is an experimental cybersecurity agent framework designed to autonomously hunt for complex attack chains in massive codebases. It utilizes a **hybrid local/cloud LangGraph architecture** to solve the two biggest blockers in AI security auditing: context collapse and data privacy.
+CipherLoop is an experimental evidence-producing security agent using a hybrid
+local/cloud LangGraph architecture. It records tool observations, compressed
+signals, and source-backed validation decisions for independent evaluation.
+
+Production evidence v2 (P0.1) and TraceForge's initial production ingestion (P0.2)
+are implemented and verified offline. A real preflight failure was captured and
+ingested correctly. A successful live Docker/Ollama/model audit has not yet been
+demonstrated. See the [contract](docs/production-evidence-contract.md) and
+[release review](docs/release-review-2026-09-12.md) for the exact scope.
 
 ---
 
@@ -35,6 +43,7 @@ graph TD
     subgraph Local Edge Executor
         LM[Local Model<br>Configured Ollama Model]:::local
         C[Context Compressor<br>Deterministic Parser]:::local
+        V[AST Evidence Validator]:::local
         WAL[(Trajectory Ledger<br>JSONL WAL)]:::memory
     end
 
@@ -45,9 +54,11 @@ graph TD
     P -->|Tactical Plan| LM
     LM <-->|Micro-Loop| ST
     LM -->|Raw Exec Log| C
-    C -->|1. Archive Full DAG| WAL
-    C -->|2. Shear Context + JSON Summary| P
-    C -->|Audit Complete| S
+    C -->|Observed tool evidence| WAL
+    C -->|Shear context + compressed candidates| V
+    V -->|Source reads and decisions| WAL
+    V -->|Next cycle| P
+    V -->|Observed completion| S
 
 ```
 
@@ -62,36 +73,22 @@ CipherLoop introduces a strict **Memory Hypervisor** and **Write-Ahead Log (WAL)
 1. **The Cloud Orchestrator (Strategic):** A configured Anthropic, OpenAI, or xAI model handles high-level planning, vulnerability triage, and report synthesis. It receives compressed findings rather than raw tool output.
 2. **The Tactical Executor (Local):** A configured Ollama model runs high-volume micro-loops over `ripgrep`, `tree`, and `semgrep`. The active message state is swept after compression to keep tactical context bounded.
 3. **The Air-Gapped Sandbox:** Tactical tools execute in a Docker container with `network_mode: none` and a read-only target mount. This reduces attack surface; before reuse, CipherLoop verifies the container's resolved target-mount identity and replaces stale bindings to prevent cross-contamination.
-4. **The AST Evidence Validator:** `validator_node` uses Python's `ast.NodeVisitor` for conservative, intra-procedural taint tracking. A finding is verified only when it can prove a `source -> flow -> sink` path (for example, `request.args.get -> variable -> subprocess.run`); regex sink heuristics are not used.
+4. **The AST Evidence Validator:** `validator_node` uses Python's `ast.NodeVisitor` for intra-procedural taint tracking. An upstream `VERIFIED` finding retains the accepted source, path, sink, and analyzed text. This heuristic is not an independent proof of exploitability.
 5. **The Context Compressor & WAL:** Raw `stdout` is retained in the append-only JSONL trajectory ledger, while active graph memory is deterministically summarized and swept with LangGraph's `RemoveMessage` reducer.
 
 ---
 
-## AST Validator
+## Scanner and validator flow
 
-Before deep analysis or transformation, the AST (Abstract Syntax Tree) Validator parses the target source and verifies that its structure is safe for downstream processing. It confirms syntax correctness before execution, identifies malformed, unsupported, or unsafe AST nodes early, and prevents engine crashes or undefined behavior caused by invalid input.
-
-## Semgrep Fallback Mechanism
-
-CipherLoop keeps scans available when native AST processing cannot safely continue—for example, when it encounters syntax errors, partial snippets, or unsupported language constructs.
-
-1. **Primary pass:** The native engine attempts AST parsing and validation.
-2. **Fallback trigger:** If parsing or validation fails with a recoverable syntax error, CipherLoop logs a non-fatal warning explaining the trigger and routes the source to Semgrep fallback mode.
-3. **Secondary pass:** Semgrep runs pattern matching against the source text, preserving scan coverage without failing the pipeline.
-
-This graceful fallback supports continuous coverage for partial and legacy codebases while avoiding unnecessary CI/CD pipeline failures.
+Semgrep runs first. A scanner failure invokes the existing sandboxed regex/ripgrep
+fallback. The compressor selects candidate summaries, and the AST validator records
+each verification, rejection, or unavailable read. Syntax failure rejects a
+candidate; it does not trigger Semgrep. Failure of both scanners is retained as
+explicit error evidence. Scanner coverage is not established by these checks.
 
 ```text
-[ Source Code ]
-       |
-       v
-[ AST Validator ] ---- (Valid) ----------> [ Native Engine Analysis ]
-       |
-   (Invalid /
-   Unsupported)
-       |
-       v
-[ Semgrep Fallback ] --------------------> [ Pattern-based Results ]
+Semgrep → compressed candidates → AST evidence validation
+   └ failure → sandboxed regex fallback → compression
 ```
 
 ---
@@ -110,7 +107,7 @@ This graceful fallback supports continuous coverage for partial and legacy codeb
 Clone the repository and set up your virtual environment:
 
 ```bash
-git clone [https://github.com/jayjz/CipherLoop.git](https://github.com/jayjz/CipherLoop.git)
+git clone https://github.com/jayjz/CipherLoop.git
 cd CipherLoop
 
 # Create and activate virtual environment
@@ -144,7 +141,7 @@ ollama pull <your OLLAMA_MODEL value>
 Launch the CLI against a target directory. CipherLoop verifies any existing sandbox's resolved target mount before reuse; a mismatched binding is replaced before the audit begins.
 
 ```bash
-python -m cipherloop.main audit ./path/to/target/repo --plan "Hunt for hardcoded credentials and remote code execution."
+python -m cipherloop.main ./path/to/target/repo --plan "Hunt for hardcoded credentials and remote code execution."
 
 ```
 
@@ -152,9 +149,18 @@ python -m cipherloop.main audit ./path/to/target/repo --plan "Hunt for hardcoded
 
 ## 📚 TraceForge Integration (Evaluation)
 
-CipherLoop is designed for deterministic evaluation. Every run emits a chronological `trajectory_<run_id>.jsonl` ledger and a `metadata_<run_id>.json` summary in `./traces/`.
+CipherLoop attempts to reserve a fresh `trajectory_<UUID>.jsonl` ledger in `./traces/`
+before preflight and publishes `metadata_<UUID>.json` only after finalization.
+Missing metadata means incomplete evidence, even if a finish event exists. Failed
+or interrupted execution is never a successful zero-finding audit.
 
 The `TrajectoryRecorder` records tool-level `raw_char_count` and `compressed_char_count`, then calculates the run-wide compression ratio in metadata. Validation events also record total candidates, verified findings, and the candidate-to-verified ratio. These measurements can be ingested by **[TraceForge](https://github.com/jayjz/TraceForge)** to evaluate compression efficiency and evidence quality empirically.
+
+TraceForge independently checks artifact integrity and source locations, without
+importing CipherLoop. Its production `PASS` is not target safety, scanner accuracy,
+task success, agent reliability, or exploitability. Hashes check consistency, not
+producer authenticity. The offline CI gate runs tests and scripted captures without
+Docker, Ollama, credentials, GPU, or model access; a hosted pass remains unverified.
 
 ## 🔒 Security Notice
 

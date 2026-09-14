@@ -35,11 +35,19 @@ def capture(output: Path, scenario: str) -> dict:
     }]
 
     def observe(_state):
+        raw = json.dumps({"results": results})
+        if scenario == "scanner_failure":
+            raw = json.dumps({"results": [], "errors": [{"message": "Fallback scanner failed"}],
+                              "fallback_used": True, "original_error": "Semgrep crashed"})
+        elif scenario == "ambiguous_scanner":
+            raw = '{"results": [], "results": [], "unused": NaN}'
+        elif scenario == "no_tools":
+            return {"messages": []}
         return {"messages": [
             AIMessage(content="", tool_calls=[
                 {"id": "smoke-scan", "name": "run_semgrep", "args": {"target_path": "app.py"}}
             ]),
-            ToolMessage(content=json.dumps({"results": results}), name="run_semgrep",
+            ToolMessage(content=raw, name="run_semgrep",
                         tool_call_id="smoke-scan"),
         ]}
 
@@ -108,7 +116,8 @@ def run():
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     captures = [capture(args.output / scenario, scenario)
-                for scenario in ("verified", "zero", "rejected", "read_failure", "failed", "interrupted")]
+                for scenario in ("verified", "zero", "rejected", "read_failure", "failed", "interrupted",
+                                 "scanner_failure", "ambiguous_scanner", "no_tools")]
     print(json.dumps({"input_mode": "scripted observations; no tactical execution", "captures": captures}, indent=2))
 
 

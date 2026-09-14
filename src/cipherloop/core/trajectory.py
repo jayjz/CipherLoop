@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import stat
 import time
 import uuid
 from pathlib import Path
@@ -64,7 +65,20 @@ class TrajectoryRecorder:
         """Reserve only the ledger; metadata is the finalization commitment."""
         if os.path.lexists(self.metadata_file):
             raise FileExistsError(f"Production metadata path already exists: {self.metadata_file}")
-        self.trajectory_file.open("x", encoding="utf-8").close()
+        with self.trajectory_file.open("x", encoding="utf-8") as stream:
+            identity = os.fstat(stream.fileno())
+            self._ledger_identity = (identity.st_dev, identity.st_ino)
+
+    def _check_ledger_identity(self, stream) -> None:
+        """Reject path reuse as well as byte changes in this single-writer ledger."""
+        path_stat = self.trajectory_file.lstat()
+        open_stat = os.fstat(stream.fileno())
+        if not stat.S_ISREG(path_stat.st_mode) or any(
+            (entry.st_dev, entry.st_ino) != self._ledger_identity
+            for entry in (path_stat, open_stat)
+        ):
+            self._append_failed = True
+            raise RuntimeError("Production ledger identity changed after reservation")
 
     def record_step(self, step_type: str, data: dict[str, Any]) -> int | None:
         """Append a single step to the JSONL ledger."""
@@ -107,6 +121,7 @@ class TrajectoryRecorder:
         serialized = json.dumps(record, allow_nan=False, separators=(",", ":"))
         try:
             with self.trajectory_file.open("a", encoding="utf-8", newline="\n") as f:
+                self._check_ledger_identity(f)
                 f.write(serialized + "\n")
                 f.flush()
                 os.fsync(f.fileno())
@@ -264,7 +279,9 @@ class TrajectoryRecorder:
         if self._finish_ref != self._seq:
             raise RuntimeError("Production terminal event must be the final ledger event")
 
-        ledger = self.trajectory_file.read_bytes()
+        with self.trajectory_file.open("rb") as stream:
+            self._check_ledger_identity(stream)
+            ledger = stream.read()
         if not ledger.endswith(b"\n") or ledger.count(b"\n") != self._seq:
             raise RuntimeError("Production ledger is not a contiguous finalized event stream")
         if hashlib.sha256(ledger).digest() != self._ledger_hash.digest():
@@ -338,15 +355,27 @@ class TrajectoryRecorder:
         verified = []
         retained_boundaries = {0}
         active_cycle = None
-        validated_compression_count = 0
+        validated_compression_count = None
+        input_verified_count = 0
+        observed_compression_count = 0
+        cycle_count = 0
         pending = []
         for row in rows:
             kind, payload = row["step_type"], row["payload"]
-            if kind == "validation.started":
+            if kind == "compression":
+                observed_compression_count += 1
+            elif kind == "validation.started":
                 if active_cycle is not None:
                     raise RuntimeError("Overlapping validation cycles")
+                cycle_count += 1
+                expected = {"cycle": cycle_count,
+                            "compressed_findings_count": observed_compression_count,
+                            "verified_findings_count": len(verified)}
+                if not same_json(payload, expected):
+                    raise RuntimeError("Validation input state diverges from recorded evidence")
                 active_cycle = row["seq"]
                 validated_compression_count = payload["compressed_findings_count"]
+                input_verified_count = payload["verified_findings_count"]
                 pending = []
             elif kind == "validation.decision" and payload["disposition"] == "verified":
                 if active_cycle is None:
@@ -360,12 +389,15 @@ class TrajectoryRecorder:
                 active_cycle = None
 
         findings = final_state.get("verified_findings", [])
+        if len(compressed) < (validated_compression_count or 0) or len(findings) < input_verified_count:
+            raise RuntimeError("Final state omits an observed validation input state")
         if len(findings) not in retained_boundaries or not same_json(
             findings, [row["payload"]["finding"] for row in verified[:len(findings)]]
         ):
             raise RuntimeError("Final verified state does not match completed validation evidence")
         if self._execution_status == "completed" and (
             active_cycle is not None
+            or validated_compression_count is None
             or len(findings) != len(verified)
             or len(compressed) != len(compressions)
             or validated_compression_count != len(compressions)

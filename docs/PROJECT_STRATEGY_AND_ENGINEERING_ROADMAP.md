@@ -48,14 +48,14 @@ The moat should not depend on owning one LLM, scanner, or orchestration framewor
 
 ## CipherLoop
 
-At the 2026-09-12 continuation review (initial worktree clean):
+At the start of the 2026-09-12 adversarial release review (CipherLoop worktree clean):
 
 - `main`: `f03a1e186e491cf24aa0f0e0671cac766c1fa8ab`
-- `feat/production-evidence-capture`: `37fcbe480f668605aee7e51b6f976c22331a6ad0`
+- `feat/production-evidence-capture`: `a5a8bf7bea443b6a35f3af101c4d4b4cbf92f911`
 - P0.1A lifecycle commit: `26e966839d337a4e74a7069a8e2e9c4880f89211`
 - P0.1B validation-evidence commit: `7f9eddb2b3310ee0de8b01dda4e1559e914b4568`
 
-`feat/production-evidence-capture` is five commits ahead of `main`, zero behind.
+`feat/production-evidence-capture` is six commits ahead of `main`, zero behind.
 The committed delta includes the operating protocol, roadmap, evidence design,
 P0.1A/P0.1B implementation, and focused tests.
 
@@ -73,9 +73,10 @@ Implemented today:
 - aggregate compression/validation telemetry,
 - offline positive and negative controls.
 
-### Documentation discrepancy
+### Scanner and validation order
 
-The current README describes an `AST Validator → Semgrep fallback` flow. Current implementation instead uses:
+The README's former `AST Validator → Semgrep fallback` description has been corrected.
+Current implementation uses:
 
 ```text
 Semgrep primary
@@ -105,12 +106,17 @@ source-before-analysis protections. See `docs/production-evidence-contract.md` f
 the current contract; the original v1 plan is historical. Existing unversioned
 capture remains compatible. Checkpoint v1 is explicitly unsupported for ingestion.
 No live audit or power-loss guarantee follows from offline producer tests.
+The adversarial release review adds final-state consistency and ledger identity
+checks, enforces sandbox isolation on reuse, and adds repository CI. See
+`docs/release-review-2026-09-12.md` for findings and exact verification.
 
 ## TrajectoryLab / TraceForge
 
 Local folder: `TrajectoryLab`  
 Upstream: `jayjz/TraceForge`  
 Current `main`: `25668c4db622a322b87271825ce68fd37390f3ec`
+Production feature HEAD: `d14f7ce3c7fed7929de26e5068a740a597edc82a` on
+`feat/cipherloop-production-ingestion`; the Linux checkout is named `TraceForge`.
 
 Implemented:
 - deterministic two-case offline CipherLoop baseline,
@@ -130,6 +136,9 @@ Explicitly not established:
 - broad agent compatibility.
 
 The synthetic baseline should remain frozen while production ingestion is developed separately.
+A real preflight failure was observed and ingested correctly as ERROR. It records
+missing Docker, not any sandbox or model execution. The first successful live run
+remains deferred to the Windows machine.
 
 ---
 
@@ -418,14 +427,14 @@ Only after users:
 **Status: established; current-status prose maintained during P0.1 closure.**
 
 - add this document,
-- keep production evidence plan as immediate technical design,
+- keep the production evidence contract as the current technical reference,
 - make `AGENTS.md` reference this file,
-- correct README architecture contradiction separately.
+- README architecture contradiction corrected during the release review.
 
 **Exit:** humans/agents have one durable strategy reference.
 
 ## Phase 1 — CipherLoop production evidence contract
-**P0.1 closed for the bounded offline producer contract; changes remain local.**
+**P0.1 production-v2 contract closed and verified offline; release-review fixes remain local.**
 
 P0.1A captures the production run lifecycle; P0.1B captures source-backed
 validation decisions. The closure slice establishes the current v2 contract in
@@ -471,6 +480,11 @@ CipherLoop runtime imports. Live sandbox/model execution remains the next bounde
 verification milestone; the smoke explicitly scripts tool results and source reads.
 
 ## Phase 3 — Cross-repo contract CI
+
+Repository-level offline producer and ingestion gates are now present. Hosted
+execution is unverified. Compatibility CI across the feature revisions remains a
+follow-up after the fixes have published immutable revisions.
+
 - pin compatible revisions,
 - offline contract fixtures,
 - producer/consumer drift checks.
@@ -558,8 +572,8 @@ All are acceptable if supported by evidence.
 # 13. Immediate execution order
 
 ```text
-1. Capture one bounded live sandbox run and ingest its unchanged v2 artifacts.
-2. Review the producer/consumer diffs; perform Git publication only when authorized.
+1. Carry the reviewed producer/consumer fixes to Windows and run the offline gates there.
+2. Capture one bounded live sandbox/model run and ingest its unchanged v2 artifacts.
 3. Preserve offline production-contract and frozen-baseline regression gates.
 4. Add cross-repo compatibility CI after compatible revisions are published.
 5. Build the first independent benchmark corpus.

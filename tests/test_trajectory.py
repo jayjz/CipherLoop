@@ -8,6 +8,7 @@ import pytest
 
 import cipherloop.core.trajectory as trajectory_module
 from cipherloop.core.trajectory import PRODUCTION_CONTRACT_VERSION, TrajectoryRecorder
+from cipherloop.executor.validator import validator_node
 
 
 def test_finalize_aggregates_tool_compression_metrics(tmp_path):
@@ -51,23 +52,23 @@ def test_production_recorder_writes_versioned_contiguous_lifecycle_and_metadata(
     )
 
     assert recorder.start_run("audit task", "/target") == 1
-    assert recorder.record_step("observation", {"value": 1}) == 2
-    assert recorder.finish_run("completed", None) == 3
+    validator_node({}, {"configurable": {"__trajectory_recorder__": recorder}})
+    assert recorder.finish_run("completed", None) == 4
     recorder.finalize({"target_directory": "/target", "compressed_findings": []})
 
     ledger_bytes = (tmp_path / f"trajectory_{run_id}.jsonl").read_bytes()
     rows = [json.loads(line) for line in ledger_bytes.splitlines()]
     metadata = json.loads((tmp_path / f"metadata_{run_id}.json").read_text(encoding="utf-8"))
 
-    assert [row["seq"] for row in rows] == [1, 2, 3]
+    assert [row["seq"] for row in rows] == [1, 2, 3, 4]
     assert all(row["contract_version"] == PRODUCTION_CONTRACT_VERSION for row in rows)
     assert rows[0]["step_type"] == "run.started"
     assert rows[-1]["payload"] == {"execution_status": "completed", "error": None}
     assert metadata["contract_version"] == PRODUCTION_CONTRACT_VERSION
     assert metadata["start_ref"] == 1
-    assert metadata["finish_ref"] == 3
+    assert metadata["finish_ref"] == 4
     assert metadata["execution_status"] == "completed"
-    assert metadata["event_count"] == len(rows) == 3
+    assert metadata["event_count"] == len(rows) == 4
     assert metadata["ledger_sha256"] == hashlib.sha256(ledger_bytes).hexdigest()
 
 
@@ -140,6 +141,7 @@ def test_production_finalization_failure_does_not_publish_valid_metadata(tmp_pat
         contract_version=PRODUCTION_CONTRACT_VERSION,
     )
     recorder.start_run("task", "/target")
+    validator_node({}, {"configurable": {"__trajectory_recorder__": recorder}})
     recorder.finish_run("completed", None)
     monkeypatch.setattr(trajectory_module.os, "replace", lambda *_: (_ for _ in ()).throw(OSError("replace failed")))
 

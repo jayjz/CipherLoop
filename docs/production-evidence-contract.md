@@ -21,9 +21,16 @@ provenance strings, never paths for the evaluator to open.
 Every row has exactly `contract_version`, `run_id`, `seq`, `timestamp`, `step_type`,
 and `payload`. `seq` is a contiguous integer starting at 1; references are positive
 integer sequence numbers of earlier events in the same ledger. Booleans are not
-integers. Recording timestamps are finite epoch seconds, not durations. JSONL must
-end in a newline. Duplicate JSON keys, nonfinite numbers, mixed versions, unknown
+integers. Recording timestamps are finite epoch seconds, not durations. Each JSONL
+event must end with LF; CRLF is accepted, CR-only framing is not. Duplicate JSON
+keys, nonfinite numbers, mixed versions, unknown
 events, invalid types, and inconsistent references are rejected by the reader.
+
+Strict JSON describes artifact structure. Embedded scanner output is an observed
+string, interpreted independently using the producer's `json.loads` behavior for
+compression reconciliation. Ambiguous embedded JSON (duplicate keys/nonfinite
+values) is retained as unavailable tool output and yields TraceForge `ERROR`;
+the same defects in artifact objects are corruption and refuse ingestion.
 
 ## Observations
 
@@ -81,17 +88,26 @@ V2 additionally requires:
 - `report_ref:null`: the current recorder does not capture the synthesizer report.
   `models:null` likewise denotes unavailable provenance, not inferred defaults.
 
-Completed execution requires all observed compressions to have reached validation,
+Completed execution requires at least one finished validation cycle, including
+runs with no tool observations. All observed compressions must have reached validation,
 no unfinished cycle, and full reconciliation of compressed/verified state. Failed
 or interrupted execution may retain a shorter state prefix: a node can durably
 record decisions before its reducer update is lost. Such observations remain in
 the ledger and are not promoted into final references. A prefix cannot end midway
 through a validator's returned finding batch.
+Validation starts must agree with preceding compression and completed validation
+occurrences. Final state cannot drop input state already witnessed by a validation
+start, even on failure. This prevents retaining findings without their compressed
+inputs or hiding a lost reducer update behind identical repeated finding objects.
 
 Each append is flushed and fsynced. An append I/O failure permanently poisons that
 recorder; later appending or finalization is refused. A running digest of successful
 writes prevents same-line-count edits from being committed. Serialization errors
 before an append can still be followed by a recorded failed lifecycle.
+The reserved ledger's filesystem identity is checked on append and final read;
+identity changes and symlink replacements are refused even with identical bytes.
+This is not protection against a hostile writer racing every filesystem operation:
+the output directory remains trusted, with one writer and quiescent handoff.
 
 The producer fsyncs a metadata temporary file, atomically publishes it in the same
 directory, then fsyncs that directory on POSIX. A directory-sync exception attempts
@@ -119,16 +135,18 @@ symbols at their stated AST locations. It does not rerun the producer's taint
 analysis or introduce a detection oracle.
 
 Its separate `traceforge-cipherloop-production-v1` result reports integrity/source
-location `PASS`, or `ERROR` for unavailable source validation and observed execution
-failure. Malformed/incomplete/incompatible artifacts raise an explicit categorized
+location `PASS`, or `ERROR` for unavailable source validation, explicit scanner/tool
+failure, ambiguous scanner JSON, and observed execution failure.
+Malformed/incomplete/incompatible artifacts raise an explicit categorized
 input error. There is no `outcome.success` or generic score. The existing frozen
 TraceForge two-case baseline and its PASS/FAIL/ERROR oracle remain unchanged.
 
-`scripts/capture_production_smoke.py --output <fresh-directory>` produces six
+`scripts/capture_production_smoke.py --output <fresh-directory>` produces nine
 self-contained bundles through the real CLI, LangGraph reducers, compressor,
 validator, and recorder, using explicitly scripted tool results and source reads.
 Verified, zero-candidate, rejected, read-failure, failed, and interrupted cases are
-reproducible offline. No tactical execution or live model audit is represented.
+joined by scanner-failure, ambiguous-scanner-JSON, and completed no-tool cases.
+These are reproducible offline. No tactical execution or live model audit is represented.
 See TraceForge `docs/cipherloop-production.md` for copying and ingestion commands.
 
 Contract checks live in `tests/test_production_contract.py`,
@@ -137,7 +155,16 @@ tests. TraceForge's independent adversarial checks live in
 `tests/test_cipherloop_production.py`. The next milestone is a bounded live sandbox
 capture passed unchanged to this reader, preserving these offline regression gates.
 
-## Closure verification — 2026-09-12
+The [release review](release-review-2026-09-12.md) records adversarial fixes and
+current verification. Repository CI now runs the offline suite, scoped lint, and
+the smoke generator; the revised hosted workflow has not yet been demonstrated.
+The retained real preflight-failure bundle records missing Docker and ingests as
+ERROR. A successful live sandbox/model audit remains unverified.
+
+## Historical closure verification — 2026-09-12, before a5a8bf7
+
+The following records the earlier closure session, including its then-current Git
+state, six-scenario smoke, test counts, and environment. It is not current Git state.
 
 Initial state matched the requested SHAs: CipherLoop `37fcbe4` on
 `feat/production-evidence-capture`, clean, tracking the same origin commit;
