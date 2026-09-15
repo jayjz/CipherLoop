@@ -1,11 +1,17 @@
 from typing import Literal
-from langgraph.graph import StateGraph, END
-from cipherloop.core.state import AuditState
 
-from cipherloop.orchestrator.nodes import planner_node, synthesizer_node
-from cipherloop.executor.local_node import call_local_model, execute_sandbox_tools, route_local_execution
+from langgraph.graph import END, StateGraph
+
+from cipherloop.core.state import AuditState
 from cipherloop.executor.compressor import compressor_node
+from cipherloop.executor.local_node import (
+    call_local_model,
+    execute_sandbox_tools,
+    route_local_execution,
+)
 from cipherloop.executor.validator import validator_node
+from cipherloop.orchestrator.nodes import planner_node, synthesizer_node
+
 
 def build_graph():
     workflow = StateGraph(AuditState)
@@ -29,7 +35,7 @@ def build_graph():
         }
     )
 
-    workflow.add_edge("sandbox_tools", "local_model")
+    workflow.add_edge("sandbox_tools", "compressor")
     workflow.add_edge("compressor", "validator")
 
     def route_after_validation(state: AuditState) -> Literal["planner", "synthesizer"]:
