@@ -160,6 +160,7 @@ def audit(
         "plan_history": [],
         "compressed_findings": [],
         "verified_findings": [],
+        "action_progress": [],
         "active_tool": "",
         "retries": 0
     }

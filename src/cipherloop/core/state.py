@@ -22,6 +22,14 @@ class VerifiedFinding(TypedDict):
     status: Literal["VERIFIED"]
     rejection_reason: NotRequired[str]
 
+
+class ActionProgress(TypedDict):
+    """A completed tool action's identity and post-observation progress marker."""
+
+    signature: str
+    meaningful_compression_count: int
+
+
 class AuditState(TypedDict):
     """
     The memory hypervisor payload passing between Cloud and Local nodes.
@@ -37,6 +45,13 @@ class AuditState(TypedDict):
     
     # Raw compressed signals from semgrep/rg
     compressed_findings: Annotated[list[dict], add]
+
+    # Append-only compressed findings are consumed by validator in state-index order.
+    # This is an occurrence cursor, not a finding-content deduplication key.
+    validated_compression_count: NotRequired[int]
+
+    # Completed tool actions are retained run-locally for non-progress dispatch control.
+    action_progress: Annotated[list[ActionProgress], add]
     
     # Strictly validated findings that met the evidence threshold
     verified_findings: Annotated[list[VerifiedFinding], add]

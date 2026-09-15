@@ -24,7 +24,26 @@ def build_graph():
     workflow.add_node("synthesizer", synthesizer_node)
 
     workflow.set_entry_point("planner")
-    workflow.add_edge("planner", "local_model")
+
+    def route_after_planner(
+        state: AuditState,
+    ) -> Literal["local_model", "validator", "synthesizer"]:
+        plan = state.get("current_plan", "")
+        if state.get("terminal_error"):
+            return "synthesizer"
+        if plan.strip().upper() == "AUDIT_COMPLETE":
+            return "validator"
+        return "local_model"
+
+    workflow.add_conditional_edges(
+        "planner",
+        route_after_planner,
+        {
+            "local_model": "local_model",
+            "validator": "validator",
+            "synthesizer": "synthesizer",
+        },
+    )
 
     workflow.add_conditional_edges(
         "local_model",
@@ -39,6 +58,8 @@ def build_graph():
     workflow.add_edge("compressor", "validator")
 
     def route_after_validation(state: AuditState) -> Literal["planner", "synthesizer"]:
+        if state.get("terminal_error"):
+            return "synthesizer"
         if state.get("retries", 0) >= 25:
             return "synthesizer"
         

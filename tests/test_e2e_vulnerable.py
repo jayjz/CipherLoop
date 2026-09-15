@@ -26,8 +26,14 @@ def test_vulnerable_fixture_produces_an_ast_verified_report(monkeypatch):
     )
 
     def planner(state):
+        if state["compressed_findings"]:
+            return {
+                "current_plan": "AUDIT_COMPLETE",
+                "messages": [AIMessage(content="command-execution audit complete")],
+                "retries": state["retries"] + 1,
+            }
         return {
-            "current_plan": "AUDIT_COMPLETE",
+            "current_plan": "Run Semgrep for command execution.",
             "messages": [AIMessage(content="run Semgrep for command execution")],
             "retries": state["retries"] + 1,
         }

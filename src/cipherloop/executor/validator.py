@@ -286,6 +286,13 @@ def validator_node(state: AuditState, config: RunnableConfig | None = None) -> d
     config = config or {}
     verified_findings: list[VerifiedFinding] = []
     compressed = state.get("compressed_findings", [])
+    validated_compression_count = state.get("validated_compression_count", 0)
+    if (
+        not isinstance(validated_compression_count, int)
+        or isinstance(validated_compression_count, bool)
+        or not 0 <= validated_compression_count <= len(compressed)
+    ):
+        raise ValueError("validated_compression_count must be within compressed_findings")
     recorder = config.get("configurable", {}).get("__trajectory_recorder__")
     is_production = bool(recorder and recorder.is_production)
     cycle = recorder.next_validation_cycle() if is_production else None
@@ -301,7 +308,8 @@ def validator_node(state: AuditState, config: RunnableConfig | None = None) -> d
         )
     total_candidates = 0
 
-    for state_index, item in enumerate(compressed):
+    for state_index in range(validated_compression_count, len(compressed)):
+        item = compressed[state_index]
         for summary_index, summary in enumerate(item.get("top_findings", [])):
             candidate_ref = None
             if is_production:
@@ -398,4 +406,7 @@ def validator_node(state: AuditState, config: RunnableConfig | None = None) -> d
             payload,
         )
 
-    return {"verified_findings": verified_findings}
+    return {
+        "verified_findings": verified_findings,
+        "validated_compression_count": len(compressed),
+    }

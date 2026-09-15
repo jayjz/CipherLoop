@@ -1,17 +1,18 @@
 import json
 import logging
+import posixpath
 import re
 import subprocess
 from typing import Any, Literal
 from uuid import uuid4
 
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.prebuilt import ToolNode
 from pydantic import ValidationError
 
 from cipherloop.core.llm import get_local_llm
-from cipherloop.core.state import AuditState
+from cipherloop.core.state import ActionProgress, AuditState
 from cipherloop.tools.fallback_tool import fallback_result_json
 from cipherloop.tools.filesystem import SANDBOX_TOOLS, WORKDIR
 from cipherloop.tools.filesystem import run_semgrep as sandbox_semgrep
@@ -117,7 +118,7 @@ def call_local_model(state: AuditState) -> dict:
 LOCAL_TOOLS = [tool for tool in SANDBOX_TOOLS if tool.name != "run_semgrep"] + [
     run_semgrep_with_fallback
 ]
-execute_sandbox_tools = ToolNode(LOCAL_TOOLS)
+_sandbox_tool_node = ToolNode(LOCAL_TOOLS)
 
 
 def _get_local_llm():
@@ -203,6 +204,165 @@ def _normalize_text_tool_call(response: AIMessage) -> AIMessage:
     if tool_call is None:
         return response
     return response.model_copy(update={"tool_calls": [tool_call]})
+
+
+def _normalized_action_path(value: str) -> str:
+    """Canonicalize only safe POSIX paths for identity; never alter dispatched args."""
+    if not value or value != value.strip() or "\\" in value:
+        return value
+    clean_path = posixpath.normpath(posixpath.join(WORKDIR, value))
+    if clean_path == WORKDIR or clean_path.startswith(WORKDIR + "/"):
+        return clean_path
+    # An invalid/escaping path stays literal so identity never makes it look valid.
+    return value
+
+
+def _escape_signature_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("|", "\\|").replace("=", "\\=")
+
+
+def _normalized_tool_arguments(tool_call: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    tool_name = tool_call.get("name")
+    arguments = tool_call.get("args")
+    if not isinstance(tool_name, str) or not isinstance(arguments, dict):
+        return None
+    selected_tool = next((item for item in LOCAL_TOOLS if item.name == tool_name), None)
+    if selected_tool is None or selected_tool.args_schema is None:
+        return None
+    try:
+        validated = selected_tool.args_schema.model_validate(arguments).model_dump()
+    except ValidationError:
+        return None
+    normalized = {
+        key: (
+            _normalized_action_path(value)
+            if key in _PATH_ARGUMENT_NAMES and isinstance(value, str)
+            else value
+        )
+        for key, value in validated.items()
+    }
+    return tool_name, normalized
+
+
+def canonical_action_signature(tool_call: dict[str, Any]) -> str | None:
+    """Return a schema-validated, deterministic, run-local tool action identity."""
+    normalized = _normalized_tool_arguments(tool_call)
+    if normalized is None:
+        return None
+    tool_name, arguments = normalized
+    values = []
+    for key in sorted(arguments):
+        value = arguments[key]
+        if isinstance(value, str):
+            encoded = _escape_signature_value(value)
+        else:
+            encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        values.append(f"{key}={encoded}")
+    return "|".join([tool_name, *values])
+
+
+def _meaningful_compression_count(findings: list[dict]) -> int:
+    """Count non-error compressed observations available to justify a later retry."""
+    count = 0
+    for finding in findings:
+        snippet = finding.get("snippet")
+        if finding.get("error") or (
+            isinstance(snippet, str)
+            and snippet.startswith(
+                (
+                    "Tool Execution Error",
+                    "Tool Execution Blocked",
+                    "Tool Execution Timeout",
+                    "System Error",
+                    "Path traversal detected",
+                )
+            )
+        ):
+            continue
+        count += 1
+    return count
+
+
+def action_progress_records(messages: list[Any], findings: list[dict]) -> list[ActionProgress]:
+    """Attach post-compression evidence markers to observed, schema-valid tool calls."""
+    signatures_by_call_id = {}
+    for message in messages:
+        if not isinstance(message, AIMessage):
+            continue
+        for tool_call in getattr(message, "tool_calls", []):
+            signature = canonical_action_signature(tool_call)
+            call_id = tool_call.get("id")
+            if signature is not None and isinstance(call_id, str):
+                signatures_by_call_id[call_id] = signature
+
+    marker = _meaningful_compression_count(findings)
+    records = []
+    for message in messages:
+        tool_call_id = getattr(message, "tool_call_id", None)
+        signature = signatures_by_call_id.get(tool_call_id)
+        if signature is not None:
+            records.append(
+                {"signature": signature, "meaningful_compression_count": marker}
+            )
+    return records
+
+
+def _last_requested_action_signatures(state: AuditState) -> list[str]:
+    for message in reversed(state.get("messages", [])):
+        tool_calls = getattr(message, "tool_calls", None)
+        if not tool_calls:
+            continue
+        return [
+            signature
+            for tool_call in tool_calls
+            if (signature := canonical_action_signature(tool_call)) is not None
+        ]
+    return []
+
+
+def _non_progress_signature(state: AuditState) -> str | None:
+    marker = _meaningful_compression_count(state.get("compressed_findings", []))
+    for signature in _last_requested_action_signatures(state):
+        for prior in reversed(state.get("action_progress", [])):
+            if (
+                prior.get("signature") == signature
+                and prior.get("meaningful_compression_count") == marker
+            ):
+                return signature
+    return None
+
+
+def _blocked_tool_messages(state: AuditState, error: str) -> list[ToolMessage]:
+    """Record a non-dispatched call as a failed observation, never as a success."""
+    for message in reversed(state.get("messages", [])):
+        tool_calls = getattr(message, "tool_calls", None)
+        if not tool_calls:
+            continue
+        return [
+            ToolMessage(
+                content=f"Tool Execution Blocked: {error}",
+                name=tool_call["name"],
+                tool_call_id=tool_call["id"],
+            )
+            for tool_call in tool_calls
+            if isinstance(tool_call.get("name"), str) and isinstance(tool_call.get("id"), str)
+        ]
+    return []
+
+
+def execute_sandbox_tools(state: AuditState, config=None) -> dict:
+    """Dispatch only actions whose prior observed result has been superseded by progress."""
+    repeated_signature = _non_progress_signature(state)
+    if repeated_signature is not None:
+        error = f"Non-progress action blocked before sandbox dispatch: {repeated_signature}"
+        return {
+            "current_plan": "AUDIT_COMPLETE",
+            "terminal_error": error,
+            "messages": _blocked_tool_messages(state, error),
+        }
+    if config is None:
+        return _sandbox_tool_node.invoke(state)
+    return _sandbox_tool_node.invoke(state, config=config)
 
 
 def route_local_execution(state: AuditState) -> Literal["execute_sandbox_tools", "compressor_node"]:

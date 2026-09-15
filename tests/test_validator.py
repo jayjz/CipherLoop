@@ -19,6 +19,14 @@ def ping():
 """
 
 
+def _apply_validation(state, config=None):
+    """Apply the validator's reducer update for direct node-invocation tests."""
+    result = validator_node(state, config)
+    state.setdefault("verified_findings", []).extend(result["verified_findings"])
+    state["validated_compression_count"] = result["validated_compression_count"]
+    return result
+
+
 def test_ast_trace_finds_request_argument_flowing_to_subprocess_run():
     trace = find_taint_trace(VULNERABLE_SOURCE, "app.py", expected_sink_line=6)
 
@@ -104,6 +112,117 @@ def test_fallback_candidate_requires_independent_ast_evidence(monkeypatch):
         SimpleNamespace(invoke=lambda _: "import subprocess\nsubprocess.run(['echo', 'safe'])\n"),
     )
     assert validator_node(state, config={})["verified_findings"] == []
+
+
+def test_validator_consumes_a_compressed_occurrence_once(monkeypatch):
+    reads = []
+    monkeypatch.setattr(
+        "cipherloop.executor.validator.read_file",
+        SimpleNamespace(invoke=lambda arguments: reads.append(arguments) or VULNERABLE_SOURCE),
+    )
+    state = {
+        "compressed_findings": [{"top_findings": ["[ERROR] app.py:6 - Command injection"]}],
+        "verified_findings": [],
+    }
+
+    first = _apply_validation(state)
+    second = _apply_validation(state)
+
+    assert len(first["verified_findings"]) == 1
+    assert second["verified_findings"] == []
+    assert state["validated_compression_count"] == 1
+    assert len(reads) == 1
+
+
+def test_validator_consumes_only_newly_appended_compression_occurrences(monkeypatch):
+    reads = []
+    monkeypatch.setattr(
+        "cipherloop.executor.validator.read_file",
+        SimpleNamespace(invoke=lambda arguments: reads.append(arguments) or VULNERABLE_SOURCE),
+    )
+    summary = "[ERROR] app.py:6 - Command injection"
+    state = {
+        "compressed_findings": [{"top_findings": [summary]}],
+        "verified_findings": [],
+    }
+
+    _apply_validation(state)
+    state["compressed_findings"].append({"top_findings": [summary]})
+    second = _apply_validation(state)
+    third = _apply_validation(state)
+
+    assert len(second["verified_findings"]) == 1
+    assert third["verified_findings"] == []
+    assert state["validated_compression_count"] == 2
+    assert len(state["verified_findings"]) == len(reads) == 2
+
+
+def test_identical_compression_occurrences_are_each_validated_once(monkeypatch):
+    monkeypatch.setattr(
+        "cipherloop.executor.validator.read_file",
+        SimpleNamespace(invoke=lambda _: VULNERABLE_SOURCE),
+    )
+    occurrence = {"top_findings": ["[ERROR] app.py:6 - Command injection"]}
+    state = {"compressed_findings": [occurrence.copy(), occurrence.copy()], "verified_findings": []}
+
+    first = _apply_validation(state)
+    second = _apply_validation(state)
+
+    assert len(first["verified_findings"]) == 2
+    assert first["verified_findings"][0] == first["verified_findings"][1]
+    assert second["verified_findings"] == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["import subprocess\nsubprocess.run(['echo', 'safe'])\n", RuntimeError("source unavailable")],
+    ids=["no_taint_trace", "source_read_failure"],
+)
+def test_rejected_occurrences_are_consumed_without_automatic_retry(monkeypatch, source):
+    calls = 0
+
+    def read(_arguments):
+        nonlocal calls
+        calls += 1
+        if isinstance(source, Exception):
+            raise source
+        return source
+
+    monkeypatch.setattr("cipherloop.executor.validator.read_file", SimpleNamespace(invoke=read))
+    state = {
+        "compressed_findings": [{"top_findings": ["[ERROR] app.py:6 - Command injection"]}],
+        "verified_findings": [],
+    }
+
+    first = _apply_validation(state)
+    second = _apply_validation(state)
+
+    assert first["verified_findings"] == second["verified_findings"] == []
+    assert calls == 1
+    assert state["validated_compression_count"] == 1
+
+
+def test_fallback_occurrence_is_not_revalidated_after_an_unrelated_tool_cycle(monkeypatch):
+    monkeypatch.setattr(
+        "cipherloop.executor.validator.read_file",
+        SimpleNamespace(invoke=lambda _: VULNERABLE_SOURCE),
+    )
+    state = {
+        "compressed_findings": [{
+            "scanner_status": "fallback",
+            "top_findings": [
+                "[WARNING] app.py:6 - Fallback regex scanner matched a potentially risky pattern."
+            ],
+        }],
+        "verified_findings": [],
+    }
+
+    _apply_validation(state)
+    state["compressed_findings"].append({"tool": "list_directory", "top_findings": []})
+    later_cycle = _apply_validation(state)
+
+    assert len(state["verified_findings"]) == 1
+    assert later_cycle["verified_findings"] == []
 
 
 def _production_recorder(tmp_path):
@@ -249,7 +368,7 @@ def test_production_validator_records_each_rejection_branch(
         }
 
 
-def test_production_validator_cycles_zero_candidates_and_duplicate_attempts(monkeypatch, tmp_path):
+def test_production_validator_cycles_consume_only_new_occurrences(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "cipherloop.executor.validator.read_file",
         SimpleNamespace(invoke=lambda _: VULNERABLE_SOURCE),
@@ -257,8 +376,8 @@ def test_production_validator_cycles_zero_candidates_and_duplicate_attempts(monk
     recorder = _production_recorder(tmp_path)
     validator_node({"messages": [], "compressed_findings": []}, {"configurable": {"__trajectory_recorder__": recorder}})
     state = _production_state(recorder, "[ERROR] app.py:6 - Command injection")
-    validator_node(state, {"configurable": {"__trajectory_recorder__": recorder}})
-    validator_node(state, {"configurable": {"__trajectory_recorder__": recorder}})
+    _apply_validation(state, {"configurable": {"__trajectory_recorder__": recorder}})
+    _apply_validation(state, {"configurable": {"__trajectory_recorder__": recorder}})
     rows = _rows(recorder)
     aggregates = [row["payload"] for row in rows if row["step_type"] == "validation"]
     candidates = [row for row in rows if row["step_type"] == "validation.candidate"]
@@ -272,9 +391,7 @@ def test_production_validator_cycles_zero_candidates_and_duplicate_attempts(monk
         "cycle_ref": 2,
     }
     assert [payload["cycle"] for payload in aggregates] == [1, 2, 3]
-    assert len(candidates) == 2
-    assert candidates[0]["payload"]["summary"] == candidates[1]["payload"]["summary"]
-    assert candidates[0]["seq"] != candidates[1]["seq"]
+    assert len(candidates) == 1
 
 
 def test_production_validator_refuses_unproven_compressed_provenance(tmp_path):

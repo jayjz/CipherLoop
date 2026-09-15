@@ -355,7 +355,8 @@ class TrajectoryRecorder:
         verified = []
         retained_boundaries = {0}
         active_cycle = None
-        validated_compression_count = None
+        completed_compression_count = 0
+        validation_input_compression_count = None
         input_verified_count = 0
         observed_compression_count = 0
         cycle_count = 0
@@ -374,7 +375,7 @@ class TrajectoryRecorder:
                 if not same_json(payload, expected):
                     raise RuntimeError("Validation input state diverges from recorded evidence")
                 active_cycle = row["seq"]
-                validated_compression_count = payload["compressed_findings_count"]
+                validation_input_compression_count = payload["compressed_findings_count"]
                 input_verified_count = payload["verified_findings_count"]
                 pending = []
             elif kind == "validation.decision" and payload["disposition"] == "verified":
@@ -386,10 +387,18 @@ class TrajectoryRecorder:
                     raise RuntimeError("Validation aggregate has no matching start")
                 verified.extend(pending)
                 retained_boundaries.add(len(verified))
+                completed_compression_count = validation_input_compression_count
                 active_cycle = None
 
         findings = final_state.get("verified_findings", [])
-        if len(compressed) < (validated_compression_count or 0) or len(findings) < input_verified_count:
+        final_validated_compression_count = final_state.get("validated_compression_count", 0)
+        if (
+            not isinstance(final_validated_compression_count, int)
+            or isinstance(final_validated_compression_count, bool)
+            or not 0 <= final_validated_compression_count <= len(compressed)
+        ):
+            raise RuntimeError("Final validation progress state is invalid")
+        if len(compressed) < (validation_input_compression_count or 0) or len(findings) < input_verified_count:
             raise RuntimeError("Final state omits an observed validation input state")
         if len(findings) not in retained_boundaries or not same_json(
             findings, [row["payload"]["finding"] for row in verified[:len(findings)]]
@@ -397,10 +406,11 @@ class TrajectoryRecorder:
             raise RuntimeError("Final verified state does not match completed validation evidence")
         if self._execution_status == "completed" and (
             active_cycle is not None
-            or validated_compression_count is None
+            or validation_input_compression_count is None
             or len(findings) != len(verified)
             or len(compressed) != len(compressions)
-            or validated_compression_count != len(compressions)
+            or completed_compression_count != len(compressions)
+            or final_validated_compression_count != len(compressions)
         ):
             raise RuntimeError("Completed run has unreconciled evidence")
         return {

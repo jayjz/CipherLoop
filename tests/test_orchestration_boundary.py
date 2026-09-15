@@ -3,7 +3,8 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.graph import END, START, StateGraph
 
 from cipherloop.core.state import AuditState
 from cipherloop.core.trajectory import PRODUCTION_CONTRACT_VERSION, TrajectoryRecorder
@@ -110,6 +111,102 @@ def test_local_model_prompt_describes_linux_tools_and_posix_target(monkeypatch):
     assert "POSIX paths only" in prompt
     assert "PowerShell, cmd.exe, drive-letter paths" in prompt
     assert "list_directory, read_file, search_code, run_semgrep" in prompt
+
+
+def test_repeated_failed_read_action_is_blocked_after_path_drift(monkeypatch):
+    """A repeated failed read is stopped even when a distinct bad path intervenes."""
+    from cipherloop.tools import filesystem
+
+    dispatched = []
+
+    def failed_read(command):
+        dispatched.append(command)
+        return "Tool Execution Error: file does not exist"
+
+    monkeypatch.setattr(filesystem, "execute_in_sandbox", failed_read)
+    state = {
+        "messages": [],
+        "compressed_findings": [],
+        "verified_findings": [],
+        "action_progress": [],
+    }
+    tool_graph = StateGraph(AuditState)
+    tool_graph.add_node("tools", local_node.execute_sandbox_tools)
+    tool_graph.add_edge(START, "tools")
+    tool_graph.add_edge("tools", END)
+    tool_graph = tool_graph.compile()
+
+    def execute_and_compress(call_id, filepath):
+        assistant = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": call_id,
+                    "name": "read_file",
+                    "args": {"filepath": filepath, "start_line": 1, "end_line": 30},
+                }
+            ],
+        )
+        state["messages"] = [assistant]
+        tool_state = tool_graph.invoke(state)
+        state["messages"] = tool_state["messages"]
+        compressed = compressor_node(state)
+        state["compressed_findings"].extend(compressed["compressed_findings"])
+        state["action_progress"].extend(compressed["action_progress"])
+        state["messages"] = []
+
+    execute_and_compress("missing-one", f"{WORKDIR}/_app.py")
+    execute_and_compress("missing-drift", f"{WORKDIR}/._app.py")
+
+    repeated = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "missing-repeat",
+                "name": "read_file",
+                "args": {"filepath": f"{WORKDIR}/_app.py", "start_line": 1, "end_line": 30},
+            }
+        ],
+    )
+    state["messages"] = [repeated]
+    blocked = tool_graph.invoke(state)
+
+    assert len(dispatched) == 2
+    assert blocked["current_plan"] == "AUDIT_COMPLETE"
+    assert "Non-progress action blocked" in blocked["terminal_error"]
+    blocked_results = [
+        message for message in blocked["messages"] if isinstance(message, ToolMessage)
+    ]
+    assert len(blocked_results) == 1
+    assert blocked_results[0].content.startswith("Tool Execution Blocked:")
+
+
+def test_action_signature_normalizes_safe_posix_paths_but_keeps_distinct_ranges():
+    first = local_node.canonical_action_signature(
+        {
+            "name": "read_file",
+            "args": {
+                "filepath": f"{WORKDIR}/./app.py",
+                "start_line": 1,
+                "end_line": 30,
+            },
+        }
+    )
+    same_path = local_node.canonical_action_signature(
+        {
+            "name": "read_file",
+            "args": {"filepath": "app.py", "start_line": 1, "end_line": 30},
+        }
+    )
+    later_range = local_node.canonical_action_signature(
+        {
+            "name": "read_file",
+            "args": {"filepath": "app.py", "start_line": 31, "end_line": 60},
+        }
+    )
+
+    assert first == same_path
+    assert first != later_range
 
 
 def test_production_graph_consumes_fallback_evidence_before_another_tool_dispatch(
@@ -260,3 +357,195 @@ def test_production_graph_consumes_fallback_evidence_before_another_tool_dispatc
     decision = rows[-2]["payload"]
     assert decision["disposition"] == "verified"
     assert decision["finding"] == final_state["verified_findings"][0]
+
+
+def test_production_graph_blocks_repeated_semgrep_after_fallback_evidence(
+    monkeypatch, tmp_path
+):
+    fixture = Path("fixtures/toy/app.py").read_text(encoding="utf-8")
+    sink_line = next(
+        number
+        for number, line in enumerate(fixture.splitlines(), start=1)
+        if "subprocess.run" in line
+    )
+    timeout = "Tool Execution Timeout: Sandbox command exceeded 30 seconds."
+    fallback_result = json.dumps(
+        {
+            "results": [
+                {
+                    "check_id": "cipherloop.fallback-regex",
+                    "path": "app.py",
+                    "start": {"line": sink_line},
+                    "extra": {
+                        "severity": "WARNING",
+                        "message": "Fallback regex scanner matched a potentially risky pattern.",
+                    },
+                }
+            ],
+            "errors": [],
+            "fallback_used": True,
+            "original_error": timeout,
+        }
+    )
+    recorder = TrajectoryRecorder(
+        run_id=str(uuid.uuid4()),
+        output_dir=str(tmp_path),
+        contract_version=PRODUCTION_CONTRACT_VERSION,
+    )
+    recorder.start_run("audit", WORKDIR)
+    planner_calls = 0
+    primary_calls = []
+    local_responses = iter(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "scan-one",
+                        "name": "run_semgrep",
+                        "args": {"target_path": WORKDIR},
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "scan-two",
+                        "name": "run_semgrep",
+                        "args": {"target_path": WORKDIR},
+                    }
+                ],
+            ),
+            AIMessage(content="complete"),
+        ]
+    )
+
+    def planner(state):
+        nonlocal planner_calls
+        planner_calls += 1
+        if planner_calls == 3:
+            return {"current_plan": "AUDIT_COMPLETE", "messages": [AIMessage(content="done")]}
+        return {
+            "current_plan": f"Run Semgrep, wording {planner_calls}.",
+            "messages": [AIMessage(content=f"Run Semgrep, wording {planner_calls}.")],
+            "retries": state["retries"] + 1,
+        }
+
+    monkeypatch.setattr(graph_module, "planner_node", planner)
+    monkeypatch.setattr(
+        graph_module, "call_local_model", lambda _state: {"messages": [next(local_responses)]}
+    )
+    monkeypatch.setattr(
+        graph_module,
+        "synthesizer_node",
+        lambda _state: {"messages": [AIMessage(content="final report")]},
+    )
+    monkeypatch.setattr(
+        local_node,
+        "_run_semgrep",
+        lambda target: primary_calls.append(target) or timeout,
+    )
+    monkeypatch.setattr(local_node, "_run_fallback_tool", lambda _target, _error: fallback_result)
+    monkeypatch.setattr(
+        "cipherloop.executor.validator.read_file", SimpleNamespace(invoke=lambda _: fixture)
+    )
+
+    final_state = graph_module.build_graph().invoke(
+        {
+            "messages": [],
+            "current_plan": "audit command execution",
+            "requested_plan": "audit command execution",
+            "target_directory": WORKDIR,
+            "plan_history": [],
+            "compressed_findings": [],
+            "verified_findings": [],
+            "action_progress": [],
+            "active_tool": "",
+            "retries": 0,
+        },
+        {"configurable": {"__trajectory_recorder__": recorder}},
+    )
+
+    assert primary_calls == [WORKDIR]
+    assert planner_calls == 2
+    assert final_state["compressed_findings"][0]["scanner_status"] == "fallback"
+    assert final_state["verified_findings"][0]["status"] == "VERIFIED"
+    assert final_state["validated_compression_count"] == 2
+    assert "Non-progress action blocked" in final_state["terminal_error"]
+    recorder.finish_run(
+        "failed",
+        {
+            "stage": "graph_execution",
+            "type": "NonProgressError",
+            "message": final_state["terminal_error"],
+        },
+    )
+    recorder.finalize(final_state)
+    metadata = json.loads(recorder.metadata_file.read_text(encoding="utf-8"))
+    rows = [
+        json.loads(line)
+        for line in recorder.trajectory_file.read_text(encoding="utf-8").splitlines()
+    ]
+    assert metadata["execution_status"] == "failed"
+    assert any(
+        row["step_type"] == "message"
+        and row["payload"].get("content", "").startswith("Tool Execution Blocked:")
+        for row in rows
+    )
+
+
+def test_terminal_planner_state_bypasses_local_model_and_reaches_synthesizer(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        graph_module,
+        "planner_node",
+        lambda _state: {
+            "current_plan": "AUDIT_COMPLETE",
+            "terminal_error": "No further tactical work is justified.",
+        },
+    )
+    monkeypatch.setattr(
+        graph_module,
+        "call_local_model",
+        lambda _state: (_ for _ in ()).throw(AssertionError("local model must not run")),
+    )
+    monkeypatch.setattr(
+        graph_module,
+        "synthesizer_node",
+        lambda state: calls.append(state["terminal_error"])
+        or {"messages": [AIMessage(content="final incomplete report")]},
+    )
+
+    final_state = graph_module.build_graph().invoke(_state(WORKDIR))
+
+    assert calls == ["No further tactical work is justified."]
+    assert final_state["current_plan"] == "AUDIT_COMPLETE"
+    assert final_state["terminal_error"] == "No further tactical work is justified."
+
+
+def test_completed_planner_state_bypasses_local_model_after_empty_validation(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        graph_module,
+        "planner_node",
+        lambda _state: {"current_plan": "AUDIT_COMPLETE"},
+    )
+    monkeypatch.setattr(
+        graph_module,
+        "call_local_model",
+        lambda _state: (_ for _ in ()).throw(AssertionError("local model must not run")),
+    )
+    monkeypatch.setattr(
+        graph_module,
+        "synthesizer_node",
+        lambda state: calls.append(state["validated_compression_count"])
+        or {"messages": [AIMessage(content="final complete report")]},
+    )
+
+    final_state = graph_module.build_graph().invoke(_state(WORKDIR))
+
+    assert calls == [0]
+    assert final_state["current_plan"] == "AUDIT_COMPLETE"

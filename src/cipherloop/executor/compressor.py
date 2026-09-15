@@ -4,6 +4,7 @@ from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
 from cipherloop.core.state import AuditState
+from cipherloop.executor.local_node import action_progress_records
 
 
 def _with_compression_metrics(finding: dict, raw_output: str) -> dict:
@@ -95,4 +96,9 @@ def compressor_node(state: AuditState, config: RunnableConfig | None = None) -> 
             if recorder:
                 recorder.record_message(msg, role="assistant")
                 
-    return {"compressed_findings": new_findings, "messages": messages_to_remove}
+    all_findings = [*state.get("compressed_findings", []), *new_findings]
+    return {
+        "compressed_findings": new_findings,
+        "action_progress": action_progress_records(messages, all_findings),
+        "messages": messages_to_remove,
+    }

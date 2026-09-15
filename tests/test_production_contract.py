@@ -51,11 +51,24 @@ def test_unclosed_and_unknown_versions_cannot_be_produced(tmp_path, version):
 
 def test_final_references_preserve_duplicate_finding_occurrences(tmp_path, monkeypatch):
     recorder, state, config = capture(tmp_path, monkeypatch)
-    for _ in range(2):
-        state["verified_findings"].extend(validator_node(state, config)["verified_findings"])
+    duplicate = ToolMessage(
+        content=json.dumps({"results": [{
+            "path": "app.py", "start": {"line": 3},
+            "extra": {"severity": "ERROR", "message": "Command injection"},
+        }]}), name="run_semgrep", tool_call_id="scan-duplicate",
+    )
+    state["compressed_findings"].extend(
+        compressor_node({"messages": [duplicate], "compressed_findings": state["compressed_findings"]}, config)[
+            "compressed_findings"
+        ]
+    )
+    state.update(validator_node(state, config))
     recorder.finish_run("completed", None)
     recorder.finalize(state)
+    compression_refs = [row["seq"] for row in rows(recorder) if row["step_type"] == "compression"]
+    candidates = [row for row in rows(recorder) if row["step_type"] == "validation.candidate"]
     decisions = [row for row in rows(recorder) if row["step_type"] == "validation.decision"]
+    assert [candidate["payload"]["compression_ref"] for candidate in candidates] == compression_refs
     assert len(decisions) == 2
     assert decisions[0]["payload"]["finding"] == decisions[1]["payload"]["finding"]
     assert metadata(recorder)["final_finding_refs"] == [row["seq"] for row in decisions]

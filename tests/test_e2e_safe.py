@@ -25,8 +25,14 @@ def test_safe_fixture_produces_no_verified_findings_and_a_safe_report(monkeypatc
     )
 
     def planner(state):
+        if state["compressed_findings"]:
+            return {
+                "current_plan": "AUDIT_COMPLETE",
+                "messages": [AIMessage(content="safe audit complete")],
+                "retries": state["retries"] + 1,
+            }
         return {
-            "current_plan": "AUDIT_COMPLETE",
+            "current_plan": "Inspect the safe fixture for command execution.",
             "messages": [AIMessage(content="safe audit plan")],
             "retries": state["retries"] + 1,
         }
