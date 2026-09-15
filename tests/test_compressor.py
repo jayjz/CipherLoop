@@ -25,6 +25,37 @@ def test_process_semgrep_output_parses_and_ranks():
     assert len(result["top_findings"]) == 2
     assert "[ERROR]" in result["top_findings"][0]
 
+
+def test_compressor_retains_fallback_subprocess_candidate_with_provenance():
+    raw_json = json.dumps(
+        {
+            "results": [
+                {
+                    "check_id": "cipherloop.fallback-regex",
+                    "path": "app.py",
+                    "start": {"line": 8},
+                    "extra": {
+                        "severity": "WARNING",
+                        "message": "Fallback regex scanner matched a potentially risky pattern.",
+                        "metadata": {"fallback_used": True},
+                    },
+                }
+            ],
+            "errors": [],
+            "fallback_used": True,
+            "original_error": "Tool Execution Timeout: Sandbox command exceeded 30 seconds.",
+        }
+    )
+
+    result = process_semgrep_output(raw_json)
+
+    assert result["top_findings"] == [
+        "[WARNING] app.py:8 - Fallback regex scanner matched a potentially risky pattern."
+    ]
+    assert result["critical_findings_count"] == 1
+    assert result["scanner_status"] == "fallback"
+    assert result["primary_error"].startswith("Tool Execution Timeout:")
+
 def test_process_generic_tool_truncates_large_payloads():
     massive_line = "A" * 4000
     res = process_generic_tool("search_code", massive_line)

@@ -156,6 +156,8 @@ def audit(
         "messages": [],
         "current_plan": plan,
         "target_directory": abs_target,
+        "requested_plan": plan,
+        "plan_history": [],
         "compressed_findings": [],
         "verified_findings": [],
         "active_tool": "",
@@ -211,9 +213,19 @@ def audit(
         )
         raise
 
-    recorder.finish_run("completed", None)
+    terminal_error = final_state.get("terminal_error")
+    if terminal_error:
+        recorder.finish_run(
+            "failed",
+            {"stage": "graph_execution", "type": "NonProgressError", "message": terminal_error},
+        )
+    else:
+        recorder.finish_run("completed", None)
     recorder.finalize(final_state)
-    typer.echo(f"\n✅ Audit complete. Trajectory and metadata saved to {recorder.output_dir}")
+    if terminal_error:
+        typer.echo(f"\n❌ Audit incomplete. Trajectory and metadata saved to {recorder.output_dir}")
+    else:
+        typer.echo(f"\n✅ Audit complete. Trajectory and metadata saved to {recorder.output_dir}")
 
 if __name__ == "__main__":
     app()

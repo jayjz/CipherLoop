@@ -1,0 +1,11 @@
+{
+  "run_id": "metrics",
+  "target_directory": "/workspace/target_repo",
+  "final_plan": "AUDIT_COMPLETE",
+  "total_retries": 2,
+  "compressed_findings_count": 2,
+  "trajectory_file": "C:\\Users\\jcoul\\Desktop\\Projects\\CipherLoop\\.pytest-checkpoint\\test_finalize_aggregates_tool_0\\trajectory_metrics.jsonl",
+  "total_raw_char_count": 200,
+  "total_compressed_char_count": 50,
+  "compression_ratio": 4.0
+}

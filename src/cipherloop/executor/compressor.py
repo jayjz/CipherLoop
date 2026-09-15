@@ -33,6 +33,10 @@ def process_semgrep_output(raw_json: str) -> dict:
             "top_findings": summaries,
             "summary_note": f"Found {len(results)} total issues. Showing top 5 critical." if len(results) > 5 else ""
         }
+        if data.get("fallback_used"):
+            # A fallback result is scan evidence, not a clean Semgrep negative.
+            finding["scanner_status"] = "fallback"
+            finding["primary_error"] = str(data.get("original_error", "Semgrep unavailable."))
         return _with_compression_metrics(finding, raw_json)
     except json.JSONDecodeError:
         finding = {"tool": "run_semgrep", "error": "Failed to parse JSON.", "snippet": raw_json[:250]}

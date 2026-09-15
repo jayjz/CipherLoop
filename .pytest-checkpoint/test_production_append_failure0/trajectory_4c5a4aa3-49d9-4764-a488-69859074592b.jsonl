@@ -1,0 +1,2 @@
+{"contract_version":"cipherloop-production-v2","run_id":"4c5a4aa3-49d9-4764-a488-69859074592b","seq":1,"timestamp":1789461715.5458663,"step_type":"run.started","payload":{"task":{"description":"task"},"target_directory":"/target","tool_capture_boundary":"compressor_observed","models":null}}
+{"contract_version":

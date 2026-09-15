@@ -39,6 +39,10 @@ def run_fallback_scanner(target_path: str, *, original_error: str) -> dict[str, 
                     "path": path,
                     "start": {"line": int(line)},
                     "extra": {
+                        # WARNING is the lowest severity selected by the existing
+                        # compressor.  This remains a fallback candidate, not a
+                        # primary Semgrep result or a verified vulnerability.
+                        "severity": "WARNING",
                         "message": "Fallback regex scanner matched a potentially risky pattern.",
                         "metadata": {"fallback_used": True, "snippet": snippet},
                     },

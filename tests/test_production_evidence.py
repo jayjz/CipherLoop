@@ -33,6 +33,15 @@ class _InterruptedGraph:
         yield  # pragma: no cover - marks this as a generator.
 
 
+class _NonProgressGraph:
+    def stream(self, initial_state, **_kwargs):
+        yield {
+            **initial_state,
+            "current_plan": "AUDIT_COMPLETE",
+            "terminal_error": "Repeated tactical plan limit reached: 3 identical normalized instructions.",
+        }
+
+
 def _install_graph(monkeypatch, graph_or_error):
     module = types.ModuleType("cipherloop.orchestrator.graph")
     if isinstance(graph_or_error, BaseException):
@@ -92,6 +101,23 @@ def test_audit_records_graph_failure_and_reraises(monkeypatch, tmp_path):
     assert rows[-1]["payload"] == {
         "execution_status": "failed",
         "error": {"stage": "graph_execution", "type": "RuntimeError", "message": "graph failed"},
+    }
+    assert metadata["execution_status"] == "failed"
+
+
+def test_audit_records_non_progress_as_failed_not_completed(monkeypatch, tmp_path):
+    recorders = _run_audit(monkeypatch, tmp_path, _NonProgressGraph())
+
+    main.audit(target=str(tmp_path), plan="original plan")
+
+    rows, metadata = _artifacts(recorders[0])
+    assert rows[-1]["payload"] == {
+        "execution_status": "failed",
+        "error": {
+            "stage": "graph_execution",
+            "type": "NonProgressError",
+            "message": "Repeated tactical plan limit reached: 3 identical normalized instructions.",
+        },
     }
     assert metadata["execution_status"] == "failed"
 

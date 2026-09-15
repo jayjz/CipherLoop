@@ -1,0 +1,21 @@
+{
+  "run_id": "004958b5-a331-46c4-abd6-b04d28fd6e6b",
+  "target_directory": "C:\\Users\\jcoul\\Desktop\\Projects\\CipherLoop\\.pytest-checkpoint\\test_audit_records_completed_l0",
+  "final_plan": "original plan",
+  "total_retries": 0,
+  "compressed_findings_count": 0,
+  "trajectory_file": "C:\\Users\\jcoul\\Desktop\\Projects\\CipherLoop\\.pytest-checkpoint\\test_audit_records_completed_l0\\trajectory_004958b5-a331-46c4-abd6-b04d28fd6e6b.jsonl",
+  "total_raw_char_count": 0,
+  "total_compressed_char_count": 0,
+  "compression_ratio": null,
+  "final_compression_refs": [],
+  "final_finding_refs": [],
+  "contract_version": "cipherloop-production-v2",
+  "start_ref": 1,
+  "finish_ref": 4,
+  "execution_status": "completed",
+  "ledger_sha256": "a77e14bb0ee33617a88f0b3638fcf6abaa087ce92dcb3f132560639177d235ed",
+  "event_count": 4,
+  "evidence_status": "complete",
+  "report_ref": null
+}

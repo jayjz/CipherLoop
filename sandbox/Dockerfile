@@ -2,6 +2,7 @@ FROM python:3.11-slim-bookworm
 
 # Install base OS tools for execution
 RUN apt-get update && apt-get install -y \
+    coreutils \
     git \
     ripgrep \
     tree \

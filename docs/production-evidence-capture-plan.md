@@ -34,8 +34,10 @@ lint diagnostics are tracked debt, not newly introduced contract failures.
 The original review and proposed v1 design below are historical and superseded.
 The subsequent [adversarial release review](release-review-2026-09-12.md) tightens
 state consistency, ledger identity, evaluator error handling, and offline CI.
-A real missing-Docker preflight failure has been ingested correctly; successful
-live sandbox/model execution is still deferred.
+A real missing-Docker preflight failure has been ingested correctly. The 2026-09-15
+live Windows run progressed beyond preflight and observed scanner fallback, but its
+manual interruption during repeated orchestration means the first completed live
+production capture remains outstanding; orchestration repetition currently blocks it.
 
 ## Historical P0.1 implementation and closure review — 2026-09-09
 

@@ -69,6 +69,43 @@ def test_validator_emits_only_a_complete_ast_verified_finding(monkeypatch):
     assert finding["taint_path"]
 
 
+def test_fallback_candidate_requires_independent_ast_evidence(monkeypatch):
+    fallback_summary = (
+        "[WARNING] app.py:6 - Fallback regex scanner matched a potentially risky pattern."
+    )
+    state = {
+        "messages": [],
+        "compressed_findings": [
+            {
+                "scanner_status": "fallback",
+                "top_findings": [fallback_summary],
+            }
+        ],
+        "verified_findings": [],
+        "current_plan": "audit",
+        "target_directory": "/workspace/target_repo",
+        "active_tool": "",
+        "retries": 0,
+    }
+    monkeypatch.setattr(
+        "cipherloop.executor.validator.read_file",
+        SimpleNamespace(invoke=lambda _: VULNERABLE_SOURCE),
+    )
+
+    verified = validator_node(state, config={})["verified_findings"]
+
+    assert len(verified) == 1
+    assert verified[0]["status"] == "VERIFIED"
+    assert verified[0]["source"]["symbol"] == "request.args.get"
+    assert verified[0]["sink"]["symbol"] == "subprocess.run"
+
+    monkeypatch.setattr(
+        "cipherloop.executor.validator.read_file",
+        SimpleNamespace(invoke=lambda _: "import subprocess\nsubprocess.run(['echo', 'safe'])\n"),
+    )
+    assert validator_node(state, config={})["verified_findings"] == []
+
+
 def _production_recorder(tmp_path):
     recorder = TrajectoryRecorder(
         run_id=str(uuid.uuid4()),
